@@ -1,0 +1,121 @@
+# ============================================
+# 意图行为项目 - 博文分类服务配置文件
+# 修改此文件即可调整参数，无需改动代码
+# ============================================
+
+# vLLM API 配置
+api:
+  url: "http://10.1.126.27:8087/v1/chat/completions"
+  model: "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"
+  max_tokens: 512
+  temperature: 0.0
+  enable_thinking: false
+  timeout: 60
+  max_retry: 3
+  retry_backoff_base: 2
+
+# 分类配置
+classification:
+  industry: "汽车"
+  layers:
+    - "认知层"
+    - "兴趣层"
+    - "考虑层"
+  # 兜底策略：未识别时归入哪个层级
+  fallback_layer: "认知层"
+
+# 提示词配置
+prompts:
+  system_prompt: |
+    你是一个汽车行业博文营销分层分类器。请将博文分类到以下3个营销层级之一。
+
+    可选层级：
+    【认知层】— 主打品牌曝光，高传播高热度，让用户认知品牌，容易形成传播趋势。
+      典型内容：精美TVC、功能解读类、知识科普类、生活记录情绪共鸣类、话题承接内容、品牌官方宣传片、新车发布会、品牌联名活动。
+      特征：以品牌/产品曝光为核心目的，传播性强，但未必包含深度产品信息或购买引导。
+
+    【兴趣层】— 含品牌词，互动率较高的，引发讨论、互动，提升用户对产品的兴趣。
+      典型内容：KOL对比/评测内容、UGC种草内容、产品功能体验分享、试驾vlog、车型亮点解读、用户讨论帖。
+      特征：有具体产品/品牌的信息，能引发用户兴趣和互动讨论，但尚未涉及具体购买决策信息。
+
+    【考虑层】— 产品真实测评、竞品横评对比，价格优惠信息，参数分析，帮助用户完成决策。
+      典型内容：优惠促销活动内容、竞品横评对比、价格/落地价讨论、参数配置对比、用户购车决策分享、购车攻略、经销商活动。
+      特征：包含帮助用户做出购买决策的具体信息，如价格、优惠、对比、参数、购买渠道等。
+
+    分类原则：
+    1. 优先看博文的核心目的：是让用户「知道品牌」→认知层；「产生兴趣」→兴趣层；「辅助决策」→考虑层
+    2. 如果博文同时涉及多个层级，按最深层级归类（如同时有品牌曝光和价格优惠，归考虑层）
+    3. 如果博文与汽车行业完全无关，归为【认知层】（兜底）
+    4. 直接输出分类结果，不要输出分析过程
+    5. 输出格式必须是：最终分类结果：【层级名称】
+
+  user_text_template: |
+    请对以下汽车行业博文进行营销分层分类。
+
+    博文内容：
+    {content}
+
+    请直接输出：最终分类结果：【层级名称】
+
+  user_image_template: |
+    请对以下汽车行业图文博文进行营销分层分类。
+
+    博文文字内容：
+    {content}
+
+    博文配图已附上，请结合文字和图片综合判断。
+
+    请直接输出：最终分类结果：【层级名称】
+
+  user_video_template: |
+    请对以下汽车行业视频博文进行营销分层分类。
+
+    博文文字内容：
+    {content}
+
+    视频关键帧已附上，请结合文字和画面综合判断。
+
+    请直接输出：最终分类结果：【层级名称】
+
+# 图片媒体配置
+media:
+  image:
+    # pid 转 URL 的模板
+    url_pattern: "https://wx2.sinaimg.cn/mw690/{pid}.jpg"
+    download_timeout: 30
+    # 单次请求最大图片数量
+    max_images_per_request: 3
+
+  video:
+    # 视频信息查询的hive表
+    hive_table: "ods_ad_sfst_media_info"
+    # showBatch API
+    showbatch_api: "http://i.iotep.tools.biz.weibo.com/api/v1/video/media/showBatch"
+    # 默认 customer_id（需替换为实际值）
+    default_customer_id: "2608812381"
+    # 抽帧数量
+    extract_frames_count: 3
+    # 视频下载超时
+    download_timeout: 120
+    # 是否启用视频处理（当前为false，后续开启）
+    enabled: false
+
+# 日志配置
+logging:
+  level: "INFO"
+  dir: "logs"
+  # 日志文件名格式
+  file_pattern: "classify_{date}.log"
+  # 错误记录文件
+  error_file: "logs/error_records.tsv"
+  # 结果输出文件
+  result_file: "output/result.tsv"
+
+# 批处理配置
+batch:
+  # 每批处理条数
+  size: 100
+  # 批间间隔（秒）
+  sleep_sec: 0.3
+  # 并发数（后续扩展用）
+  concurrency: 1
