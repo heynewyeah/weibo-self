@@ -37,13 +37,23 @@ import logging
 from datetime import datetime
 from typing import List, Dict
 
+# # ─────────────────────────────────────────────
+# # 路径配置
+# # ─────────────────────────────────────────────
+# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
+# # FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
+# FIXTURES_DIR = "/tmp/xuanyu11"
+
 # ─────────────────────────────────────────────
 # 路径配置
 # ─────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
-# FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
-FIXTURES_DIR = "/tmp/xuanyu11"
+# 脚本同级私有临时目录
+FIXTURES_DIR = os.path.join(SCRIPT_DIR, "tmp_fixtures")
+# 运行前自动创建
+os.makedirs(FIXTURES_DIR, exist_ok=True)
 
 HDFS_DATA_DIR = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/test_samples"
 
@@ -337,7 +347,6 @@ def main():
     logger.info(f"样本统计: 文本={len(text_samples)} 图片={len(image_samples)} 视频={len(video_samples)} 合计={len(all_samples)}")
 
     # ── 1. 写本地 fixtures ──────────────────────────────────────
-    '''
     os.makedirs(FIXTURES_DIR, exist_ok=True)
 
     # 按类型分文件（JSONL，含 meta 信息，供测试脚本读取）
@@ -350,7 +359,6 @@ def main():
 
     # TSV 格式（兼容旧版批量处理）
     write_tsv(all_samples, os.path.join(FIXTURES_DIR, "all_samples.tsv"))
-    '''
 
     # ── 2. 上传 HDFS ────────────────────────────────────────────
     if not args.local_only:
@@ -371,7 +379,7 @@ def main():
     else:
         logger.info("--local-only 模式，跳过 HDFS 上传")
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    elapsed = (datetime.now() - start_time).total_seconds() 
     logger.info("=" * 60)
     logger.info(f"数据生成完成，耗时 {elapsed:.1f}s")
     logger.info(f"本地文件目录: {FIXTURES_DIR}")
