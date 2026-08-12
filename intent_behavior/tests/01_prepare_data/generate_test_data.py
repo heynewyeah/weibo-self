@@ -337,6 +337,7 @@ def main():
     logger.info(f"样本统计: 文本={len(text_samples)} 图片={len(image_samples)} 视频={len(video_samples)} 合计={len(all_samples)}")
 
     # ── 1. 写本地 fixtures ──────────────────────────────────────
+    '''
     os.makedirs(FIXTURES_DIR, exist_ok=True)
 
     # 按类型分文件（JSONL，含 meta 信息，供测试脚本读取）
@@ -349,6 +350,7 @@ def main():
 
     # TSV 格式（兼容旧版批量处理）
     write_tsv(all_samples, os.path.join(FIXTURES_DIR, "all_samples.tsv"))
+    '''
 
     # ── 2. 上传 HDFS ────────────────────────────────────────────
     if not args.local_only:
