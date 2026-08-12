@@ -100,6 +100,52 @@ media:
     # 是否启用视频处理（当前为false，后续开启）
     enabled: false
 
+# 数据提取配置（新增）
+# 支持三种 source_type: hive / local / hdfs
+extractor:
+  source_type: "local"  # 默认本地测试，正式环境可改为 hive / hdfs
+
+  # ------------------- Hive 配置 -------------------
+  hive:
+    start_dt: "20260701"
+    end_dt: "20260731"
+    industry: "汽车"
+    bid_type: 4
+    table_ad: "dplus_dm.dm_wb_ad_sfst_multi_day"
+    table_content: "ods_tblog_content"
+    table_media: "ods_ad_sfst_media_info"
+    # 是否关联媒体表（开启后可提取视频 media_id）
+    enable_media_join: false
+    # 字段映射：列名 -> 列索引（有表头时自动识别，无表头时需手动指定）
+    field_mapping:
+      mid: 0
+      content: 1
+      dt: 2
+    # 自定义 SQL 覆盖（留空则使用默认 SQL）
+    query_override: ""
+
+  # ------------------- 本地文件配置 -------------------
+  local:
+    # 本地 TSV 文件路径（支持相对路径）
+    file_path: "data/sample.tsv"
+    # 是否有表头（true 时自动识别列名）
+    has_header: false
+    # 字段映射（无表头时必须指定）
+    field_mapping:
+      mid: 0
+      content: 1
+      dt: 2
+
+  # ------------------- HDFS 配置 -------------------
+  hdfs:
+    # HDFS 文件路径（支持目录，自动探测 part-* 文件）
+    file_path: "/dw_ext/ad/person/xuanyu11/intent_behavior/data/car_weibo_ad_20260701_20260731"
+    has_header: false
+    field_mapping:
+      mid: 0
+      content: 1
+      dt: 2
+
 # 日志配置
 logging:
   level: "INFO"

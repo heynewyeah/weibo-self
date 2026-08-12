@@ -2,7 +2,7 @@
 媒体处理模块
 
 负责图片和视频的获取、下载、转换。
-- 图片：pid → URL → 下载到本地
+- 图片：pid → URL → 下载到本地 → base64
 - 视频：media_id → hive表 → fid → showBatch API → 视频URL → 下载 → 抽帧（预留）
 """
 
@@ -13,19 +13,22 @@ import requests
 from typing import Optional, List, Dict, Any
 
 
-class ImageHandler:
-    """图片处理器：pid → URL → 下载"""
+logger = logging.getLogger(__name__)
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger):
+
+class ImageHandler:
+    """图片处理器：pid → URL → 下载 → base64"""
+
+    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
         """
         Args:
             config: media.image 配置段
             logger: 日志器
         """
-        self.url_pattern = config["url_pattern"]
+        self.url_pattern = config.get("url_pattern", "https://wx2.sinaimg.cn/mw690/{pid}.jpg")
         self.download_timeout = config.get("download_timeout", 30)
         self.max_images = config.get("max_images_per_request", 3)
-        self.logger = logger
+        self.logger = logger or logging.getLogger(__name__)
 
     def pid_to_url(self, pid: str) -> str:
         """
@@ -41,18 +44,22 @@ class ImageHandler:
 
     def extract_pids(self, content: str) -> List[str]:
         """
-        从博文内容中提取图片pid
+        从博文内容中提取图片pid（实例方法，供分类器调用）
+        """
+        return self._extract_pids_from_text(content, self.max_images)
+
+    @staticmethod
+    def _extract_pids_from_text(content: str, max_images: int = 3) -> List[str]:
+        """
+        从博文内容中提取图片pid（静态方法，供数据提取层无实例时调用）
 
         微博博文中的图片pid通常以JSON格式嵌入，如：
         {"pid":"006mX07Rly8ifv3xs5535j30ud0plk1m"}
         也可能直接出现pid字符串
-
-        Args:
-            content: 博文文字内容
-
-        Returns:
-            pid 列表
         """
+        if not content:
+            return []
+
         pids = []
 
         # 策略1：匹配 {"pid":"xxx"} 格式
@@ -71,7 +78,7 @@ class ImageHandler:
             if p not in seen:
                 seen.add(p)
                 unique_pids.append(p)
-                if len(unique_pids) >= self.max_images:
+                if len(unique_pids) >= max_images:
                     break
 
         return unique_pids
@@ -146,7 +153,7 @@ class VideoHandler:
     当前为预留实现，待视频功能启用后完善。
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger):
+    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
         """
         Args:
             config: media.video 配置段
@@ -158,14 +165,14 @@ class VideoHandler:
         self.extract_frames_count = config.get("extract_frames_count", 3)
         self.download_timeout = config.get("download_timeout", 120)
         self.enabled = config.get("enabled", False)
-        self.logger = logger
+        self.logger = logger or logging.getLogger(__name__)
 
     def get_video_url(self, media_id: str, customer_id: str = None) -> Optional[str]:
         """
         通过 media_id 获取视频播放地址
 
         步骤：
-        1. 查 hive 表 ods_ad_sfst_media_info 获取 fid
+        1. 查 hive 表 ods_ad_sfst_media_info 获取 fid（预留）
         2. 调 showBatch API 获取视频URL
 
         Args:
@@ -216,16 +223,11 @@ class VideoHandler:
         """
         下载视频到本地
 
-        Args:
-            url: 视频URL
-            save_path: 本地保存路径
-
         Returns:
             成功返回 True，失败返回 False
 
         TODO: 实现下载逻辑
         """
-        # TODO: 实现视频下载
         self.logger.info(f"[预留] 视频下载: {url} → {save_path}")
         return False
 
@@ -234,27 +236,17 @@ class VideoHandler:
         """
         从视频中抽取关键帧
 
-        Args:
-            video_path: 视频文件本地路径
-            num_frames: 抽帧数量
-            output_dir: 帧图片输出目录
-
         Returns:
             帧图片路径列表
 
         TODO: 实现抽帧逻辑（使用cv2或imageio）
         """
-        # TODO: 实现视频抽帧
         self.logger.info(f"[预留] 视频抽帧: {video_path}")
         return []
 
     def process_video(self, media_id: str, customer_id: str = None) -> List[str]:
         """
         完整视频处理流程：获取URL → 下载 → 抽帧
-
-        Args:
-            media_id: 媒体ID
-            customer_id: 客户ID
 
         Returns:
             视频帧图片路径列表

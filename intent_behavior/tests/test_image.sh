@@ -1,5 +1,5 @@
 #!/bin/bash
-# test_image.sh — 图文博文分类测试
+# test_image.sh — 图文博文分类测试（单条）
 # 用法: bash tests/test_image.sh
 
 cd "$(dirname "$0")/.."

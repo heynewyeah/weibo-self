@@ -13,7 +13,11 @@
      python3 main.py --mode batch --input data.tsv
      TSV格式: mid \t uid \t content \t [pids] \t [media_ids]
 
-  4. API服务模式 (后续扩展):
+  4. 数据提取 + 分类完整链路:
+     python3 main.py --mode pipeline --config config/config.yaml
+     （根据 config.yaml 中 extractor 配置自动提取并分类）
+
+  5. API服务模式 (后续扩展):
      python3 main.py --mode server --port 8088
 """
 
@@ -22,10 +26,11 @@ import os
 import argparse
 import yaml
 
-# 将 src 目录加入路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.classifier import BlogClassifier
+from src.data_extractor import create_extractor
+from src.models import BlogItem
 from src.utils import setup_logger
 
 
@@ -62,7 +67,7 @@ def run_single(args, classifier):
 
 
 def run_batch(args, classifier):
-    """批量分类"""
+    """批量分类（从TSV文件读取）"""
     input_file = args.input
 
     if not os.path.exists(input_file):
@@ -76,19 +81,63 @@ def run_batch(args, classifier):
             if not line:
                 continue
             parts = line.split("\t")
-            item = {
-                "mid": parts[0] if len(parts) > 0 else "",
-                "uid": parts[1] if len(parts) > 1 else "",
-                "content": parts[2] if len(parts) > 2 else "",
-            }
+            item = BlogItem(
+                mid=parts[0] if len(parts) > 0 else "",
+                uid=parts[1] if len(parts) > 1 else "",
+                content=parts[2] if len(parts) > 2 else "",
+            )
             if len(parts) > 3 and parts[3]:
-                item["image_pids"] = [p.strip() for p in parts[3].split(",") if p.strip()]
+                item.pic_ids = [p.strip() for p in parts[3].split(",") if p.strip()]
             if len(parts) > 4 and parts[4]:
-                item["video_media_ids"] = [m.strip() for m in parts[4].split(",") if m.strip()]
+                item.media_ids = [m.strip() for m in parts[4].split(",") if m.strip()]
             items.append(item)
 
     print(f"共加载 {len(items)} 条数据")
     classifier.classify_batch(items)
+
+
+def run_pipeline(args, config, logger):
+    """
+    完整链路：数据提取 → 分类 → 输出
+
+    根据 config.yaml 中 extractor 配置自动选择数据源并执行分类。
+    """
+    extractor_cfg = config.get("extractor", {})
+    source_type = extractor_cfg.get("source_type", "local")
+
+    logger.info(f"[Pipeline] 启动完整链路，数据源: {source_type}")
+
+    # 1. 数据提取
+    try:
+        extractor = create_extractor(config, logger)
+        items = extractor.extract()
+    except Exception as e:
+        logger.error(f"[Pipeline] 数据提取失败: {e}")
+        print(f"❌ 数据提取失败: {e}")
+        sys.exit(1)
+
+    if not items:
+        logger.warning("[Pipeline] 未提取到任何数据")
+        print("⚠️ 未提取到任何数据")
+        return
+
+    logger.info(f"[Pipeline] 提取成功，共 {len(items)} 条")
+
+    # 2. 分类
+    classifier = BlogClassifier(config, logger)
+    results = classifier.classify_batch(items)
+
+    # 3. 汇总输出
+    success_count = sum(1 for r in results if r.success)
+    fail_count = len(results) - success_count
+    print("\n" + "=" * 50)
+    print(f"[Pipeline] 处理完成")
+    print(f"  总数:   {len(results)}")
+    print(f"  成功:   {success_count}")
+    print(f"  失败:   {fail_count}")
+    print(f"  结果文件: {config['logging'].get('result_file', 'output/result.tsv')}")
+    print(f"  错误文件: {config['logging'].get('error_file', 'logs/error_records.tsv')}")
+    print("=" * 50)
 
 
 def run_server(args, classifier):
@@ -111,9 +160,12 @@ def main():
 
   # 批量处理
   python3 main.py --mode batch --input data.tsv
+
+  # 完整链路（提取+分类）
+  python3 main.py --mode pipeline --config config/config.yaml
         """
     )
-    parser.add_argument("--mode", choices=["single", "batch", "server"],
+    parser.add_argument("--mode", choices=["single", "batch", "pipeline", "server"],
                         default="single", help="运行模式")
     parser.add_argument("--config", default="config/config.yaml", help="配置文件路径")
 
@@ -155,6 +207,8 @@ def main():
         run_single(args, classifier)
     elif args.mode == "batch":
         run_batch(args, classifier)
+    elif args.mode == "pipeline":
+        run_pipeline(args, config, logger)
     elif args.mode == "server":
         run_server(args, classifier)
 
