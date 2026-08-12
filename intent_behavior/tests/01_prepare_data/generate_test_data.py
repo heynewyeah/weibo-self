@@ -42,7 +42,8 @@ from typing import List, Dict
 # ─────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
-FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
+# FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
+FIXTURES_DIR = "/tmp/xuanyu11"
 
 HDFS_DATA_DIR = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/test_samples"
 
