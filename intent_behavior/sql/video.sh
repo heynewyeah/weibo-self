@@ -429,10 +429,14 @@ run_single() {
         exit 1
     fi
 
-    echo "   分类结果:"
+    local layer
+    layer=$(extract_layer "${classify_result}")
+
+    echo "   模型原始输出:"
     echo "   ┌──────────────────────────────────────────"
     echo "   │ ${classify_result}"
     echo "   └──────────────────────────────────────────"
+    echo "   提取标签: ${layer}"
 
     END_TS=$(date +%s)
     echo ""
@@ -616,7 +620,11 @@ run_batch() {
         local layer
         layer=$(extract_layer "${classify_result}")
 
-        echo "   ✅ 分类结果: ${layer}"
+        if [ "${layer}" = "未识别" ]; then
+            echo "   ⚠️  未识别，原始输出: ${classify_result}"
+        else
+            echo "   ✅ 分类结果: ${layer}"
+        fi
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
             "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${layer}" "${classify_result}" "true" "" >> "${OUTPUT}"
         success_count=$((success_count + 1))
