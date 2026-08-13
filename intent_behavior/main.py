@@ -9,22 +9,28 @@
   2. 单条图文测试:
      python3 main.py --mode single --mid 5250218712893321 --uid 123456 --content "博文内容" --pids pid1,pid2
 
-  3. 批量处理 (从TSV文件读取):
+  3. 批量处理 (从 JSONL 文件读取，推荐):
+     python3 main.py --mode batch --input data.jsonl
+     JSONL格式: 每行一个 JSON 对象，字段见 docs/upstream_data_spec.md
+
+  4. 批量处理 (从 TSV 文件读取，兼容旧版):
      python3 main.py --mode batch --input data.tsv
      TSV格式: mid \t uid \t content \t [pids] \t [media_ids]
 
-  4. 数据提取 + 分类完整链路:
+  5. 数据提取 + 分类完整链路:
      python3 main.py --mode pipeline --config config/config.yaml
      （根据 config.yaml 中 extractor 配置自动提取并分类）
 
-  5. API服务模式 (后续扩展):
+  6. API服务模式 (后续扩展):
      python3 main.py --mode server --port 8088
 """
 
 import sys
 import os
+import json
 import argparse
 import yaml
+from typing import List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,6 +44,101 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     """加载配置文件"""
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _parse_jsonl_to_blog_items(input_file: str) -> List[BlogItem]:
+    """
+    解析 JSONL 文件为 BlogItem 列表。
+
+    JSONL 格式（每行一个 JSON 对象）：
+      {"mid":"xxx","uid":"yyy","content":"...","media_type":"text","media_info":null}
+      {"mid":"xxx","uid":"yyy","content":"...","media_type":"image","media_info":[{"media_type":"1","customer_info":"[\"pid1\"]"}]}
+      {"mid":"xxx","uid":"yyy","content":"...","media_type":"video","media_info":[{"media_type":"2","customer_info":"{\"cover\":\"...\",\"fid\":\"...\"}"}]}
+
+    字段说明见 docs/upstream_data_spec.md
+    """
+    items = []
+    with open(input_file, "r", encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"  ⚠️  第 {lineno} 行 JSON 解析失败，跳过: {e}")
+                continue
+
+            mid = str(raw.get("mid", ""))
+            uid = str(raw.get("uid", ""))
+            content = raw.get("content", "") or ""
+            media_info = raw.get("media_info") or []
+            dt = raw.get("dt", "")
+
+            pic_ids = []
+            media_ids = []
+
+            if isinstance(media_info, list):
+                for m in media_info:
+                    mt = str(m.get("media_type", ""))
+                    customer_info = m.get("customer_info", "")
+                    if mt == "1":
+                        # 图片：解析 pid 列表
+                        try:
+                            pid_list = json.loads(customer_info)
+                            if isinstance(pid_list, list):
+                                pic_ids.extend(pid_list)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    elif mt == "2":
+                        # 视频：提取 fid
+                        try:
+                            video_info = json.loads(customer_info)
+                            fid = video_info.get("fid", "")
+                            if fid:
+                                media_ids.append(fid)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+            items.append(BlogItem(
+                mid=mid,
+                uid=uid,
+                content=content,
+                pic_ids=pic_ids,
+                media_ids=media_ids,
+                dt=dt,
+            ))
+
+    return items
+
+
+def _parse_tsv_to_blog_items(input_file: str) -> List[BlogItem]:
+    """
+    解析 TSV 文件为 BlogItem 列表（兼容旧版格式）。
+
+    TSV 格式：mid \t uid \t content \t [pids逗号分隔] \t [media_ids逗号分隔]
+    """
+    items = []
+    with open(input_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            # 跳过表头
+            if line.startswith("mid\t"):
+                continue
+            parts = line.split("\t")
+            item = BlogItem(
+                mid=parts[0] if len(parts) > 0 else "",
+                uid=parts[1] if len(parts) > 1 else "",
+                content=parts[2] if len(parts) > 2 else "",
+            )
+            if len(parts) > 3 and parts[3]:
+                item.pic_ids = [p.strip() for p in parts[3].split(",") if p.strip()]
+            if len(parts) > 4 and parts[4]:
+                item.media_ids = [m.strip() for m in parts[4].split(",") if m.strip()]
+            items.append(item)
+    return items
 
 
 def run_single(args, classifier):
@@ -67,32 +168,29 @@ def run_single(args, classifier):
 
 
 def run_batch(args, classifier):
-    """批量分类（从TSV文件读取）"""
+    """
+    批量分类
+
+    自动识别输入文件格式：
+    - .jsonl / .json → JSONL 格式（推荐，字段见 docs/upstream_data_spec.md）
+    - .tsv / .txt / 其他 → TSV 格式（兼容旧版）
+    """
     input_file = args.input
 
     if not os.path.exists(input_file):
         print(f"❌ 输入文件不存在: {input_file}")
         sys.exit(1)
 
-    items = []
-    with open(input_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("\t")
-            item = BlogItem(
-                mid=parts[0] if len(parts) > 0 else "",
-                uid=parts[1] if len(parts) > 1 else "",
-                content=parts[2] if len(parts) > 2 else "",
-            )
-            if len(parts) > 3 and parts[3]:
-                item.pic_ids = [p.strip() for p in parts[3].split(",") if p.strip()]
-            if len(parts) > 4 and parts[4]:
-                item.media_ids = [m.strip() for m in parts[4].split(",") if m.strip()]
-            items.append(item)
+    # 自动识别格式
+    ext = os.path.splitext(input_file)[1].lower()
+    if ext in (".jsonl", ".json"):
+        items = _parse_jsonl_to_blog_items(input_file)
+        fmt = "JSONL"
+    else:
+        items = _parse_tsv_to_blog_items(input_file)
+        fmt = "TSV"
 
-    print(f"共加载 {len(items)} 条数据")
+    print(f"输入格式: {fmt}，共加载 {len(items)} 条数据")
     classifier.classify_batch(items)
 
 
