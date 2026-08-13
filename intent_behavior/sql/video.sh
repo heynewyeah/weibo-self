@@ -146,6 +146,35 @@ check_writable_dir() {
     return 0
 }
 
+# 从模型原始输出中提取层级标签
+# 优先匹配中文三层；匹配不到时尝试英文/拼音关键词；仍失败返回"未识别"
+extract_layer() {
+    local raw="$1"
+    local layer
+
+    layer=$(echo "${raw}" | grep -oE '认知层|兴趣层|考虑层' | tail -1)
+    if [ -n "${layer}" ]; then
+        echo "${layer}"
+        return 0
+    fi
+
+    layer=$(echo "${raw}" | grep -oiE 'awareness|cognition|interest|consideration|认知|兴趣|考虑' | tail -1)
+    case "${layer}" in
+        [Aa]wareness|[Cc]ognition|认知)
+            echo "认知层"
+            ;;
+        [Ii]nterest|兴趣)
+            echo "兴趣层"
+            ;;
+        [Cc]onsideration|考虑)
+            echo "考虑层"
+            ;;
+        *)
+            echo "未识别"
+            ;;
+    esac
+}
+
 # 调用 showBatch API 获取视频信息（含封面图 URL）
 get_video_cover() {
     local media_id="$1"
@@ -252,7 +281,7 @@ call_qwen_image() {
     payload="{
         \"model\": \"${MODEL}\",
         \"messages\": [
-            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。直接输出：最终分类结果：【层级名称】\"},
+            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文严格分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。只能输出固定格式：最终分类结果：【层级名称】。不要输出任何解释、分析或额外内容。\"},
             {\"role\": \"user\", \"content\": [
                 {\"type\": \"text\", \"text\": \"${prompt}\"},
                 {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
@@ -291,6 +320,10 @@ call_qwen_image() {
         echo "curl_stderr:" >> "${debug_log}"
         cat "${curl_stderr}" >> "${debug_log}" 2>/dev/null || true
         echo "Debug日志: ${debug_log}"
+        if [ -n "${PERSIST_DEBUG_DIR:-}" ]; then
+            mkdir -p "${PERSIST_DEBUG_DIR}"
+            cp "${debug_log}" "${PERSIST_DEBUG_DIR}/api_debug_${mid}.log"
+        fi
     fi
 
     if [ -s "${curl_stderr}" ]; then
@@ -463,6 +496,7 @@ run_batch() {
     OUTPUT="${OUTPUT:-${OUTPUT_DIR}/video_batch_${run_ts}.tsv}"
     local output_json="${OUTPUT%.tsv}.json"
     local output_summary="${OUTPUT%.tsv}_summary.txt"
+    PERSIST_DEBUG_DIR="${OUTPUT_DIR}/debug_${run_ts}"
 
     if ! touch "${OUTPUT}" 2>/dev/null; then
         echo "[错误] 无法写入结果文件: ${OUTPUT}"
@@ -477,9 +511,9 @@ run_batch() {
     echo "   摘要文件: ${output_summary}"
     echo ""
 
-    printf "mid\tuid\tcontent_preview\tfid\tlayer\tsuccess\terror\n" > "${OUTPUT}"
+    printf "mid\tuid\tcontent_preview\tfid\tlayer\traw_output\tsuccess\terror\n" > "${OUTPUT}"
 
-    # ── 逐条处理 ──────────────────────────────────────────────
+    # ── 逐条处理 ──────────────────────────────────────────
     local lineno=0
     local success_count=0
     local fail_count=0
@@ -512,8 +546,8 @@ run_batch() {
 
         if [ -z "${vfid}" ]; then
             echo "   ❌ 未解析到 fid"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "" "" "false" "未解析到fid" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "" "" "" "false" "未解析到fid" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             continue
         fi
@@ -528,8 +562,8 @@ run_batch() {
 
         if [ -z "${vcover}" ]; then
             echo "   ❌ 未获取到封面图 URL"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "false" "未获取到封面图URL" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "未获取到封面图URL" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             continue
         fi
@@ -543,8 +577,8 @@ run_batch() {
         local dl_status=$?
         if [ "${dl_status}" -ne 0 ]; then
             echo "   ❌ ${dl_error}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "false" "${dl_error}" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "${dl_error}" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             rm -f "${cover_path}"
             continue
@@ -563,20 +597,19 @@ run_batch() {
 
         if [ -z "${classify_result}" ]; then
             echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             rm -f "${cover_path}" "${compressed_path}"
             continue
         fi
 
         local layer
-        layer=$(echo "${classify_result}" | grep -oE '认知层|兴趣层|考虑层' | tail -1)
-        [ -z "${layer}" ] && layer="未识别"
+        layer=$(extract_layer "${classify_result}")
 
         echo "   ✅ 分类结果: ${layer}"
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${layer}" "true" "" >> "${OUTPUT}"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${layer}" "${classify_result}" "true" "" >> "${OUTPUT}"
         success_count=$((success_count + 1))
 
         if [ "${first_json}" -eq 1 ]; then
@@ -595,7 +628,7 @@ run_batch() {
     END_TS=$(date +%s)
     ELAPSED=$((END_TS - START_TS))
 
-    # ── 生成摘要 ──────────────────────────────────────────────
+    # ── 生成摘要 ──────────────────────────────────────────
     {
         echo "============================================"
         echo "  视频批量测试摘要"
@@ -612,7 +645,7 @@ run_batch() {
         echo "成功率:       $([ "${processed}" -gt 0 ] && echo "scale=1; ${success_count}*100/${processed}" | bc || echo "N/A")%"
         echo "============================================"
         if [ "${DEBUG}" -eq 1 ]; then
-            echo "API 调试日志目录: ${TMP_DIR}"
+            echo "API 调试日志目录: ${PERSIST_DEBUG_DIR}"
         fi
     } | tee "${output_summary}"
 

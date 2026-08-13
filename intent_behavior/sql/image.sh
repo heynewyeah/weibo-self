@@ -137,12 +137,40 @@ check_writable_dir() {
         echo "[错误] 输出目录无写权限: ${dir}"
         return 1
     fi
-    return 0
-}
-
-# 压缩图片（如果图片过大）
-# 策略：优先用 ImageMagick convert，否则用 Python PIL，否则返回原图路径
-compress_image_if_needed() {
+    }
+    
+    # 从模型原始输出中提取层级标签
+    # 优先匹配中文三层；匹配不到时尝试英文/拼音关键词；仍失败返回"未识别"
+    extract_layer() {
+        local raw="$1"
+        local layer
+    
+        layer=$(echo "${raw}" | grep -oE '认知层|兴趣层|考虑层' | tail -1)
+        if [ -n "${layer}" ]; then
+            echo "${layer}"
+            return 0
+        fi
+    
+        layer=$(echo "${raw}" | grep -oiE 'awareness|cognition|interest|consideration|认知|兴趣|考虑' | tail -1)
+        case "${layer}" in
+            [Aa]wareness|[Cc]ognition|认知)
+                echo "认知层"
+                ;;
+            [Ii]nterest|兴趣)
+                echo "兴趣层"
+                ;;
+            [Cc]onsideration|考虑)
+                echo "考虑层"
+                ;;
+            *)
+                echo "未识别"
+                ;;
+        esac
+    }
+    
+    # 压缩图片（如果图片过大）
+    # 策略：优先用 ImageMagick convert，否则用 Python PIL，否则返回原图路径
+    compress_image_if_needed() {
     local input_path="$1"
     local output_path="$2"
     local max_size_kb=500
@@ -212,7 +240,7 @@ call_qwen_image() {
     payload="{
         \"model\": \"${MODEL}\",
         \"messages\": [
-            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。直接输出：最终分类结果：【层级名称】\"},
+            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文严格分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。只能输出固定格式：最终分类结果：【层级名称】。不要输出任何解释、分析或额外内容。\"},
             {\"role\": \"user\", \"content\": [
                 {\"type\": \"text\", \"text\": \"${prompt}\"},
                 {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
@@ -246,14 +274,17 @@ call_qwen_image() {
     http_code=$(echo "${resp}" | grep -oE 'HTTP_CODE:[0-9]+' | cut -d: -f2)
     resp_body=$(echo "${resp}" | sed '/HTTP_CODE:/d')
 
-    if [ "${DEBUG}" -eq 1 ]; then
-        echo "http_code=${http_code}" >> "${debug_log}"
-        echo "${resp_body}" >> "${debug_log}"
-        echo "curl_stderr:" >> "${debug_log}"
-        cat "${curl_stderr}" >> "${debug_log}" 2>/dev/null || true
-        echo "Debug日志: ${debug_log}"
-    fi
-
+        if [ "${DEBUG}" -eq 1 ]; then
+            echo "http_code=${http_code}" >> "${debug_log}"
+            echo "${resp_body}" >> "${debug_log}"
+            echo "curl_stderr:" >> "${debug_log}"
+            cat "${curl_stderr}" >> "${debug_log}" 2>/dev/null || true
+            echo "Debug日志: ${debug_log}"
+            if [ -n "${PERSIST_DEBUG_DIR:-}" ]; then
+                mkdir -p "${PERSIST_DEBUG_DIR}"
+                cp "${debug_log}" "${PERSIST_DEBUG_DIR}/api_debug_${mid}.log"
+            fi
+        fi
     if [ -s "${curl_stderr}" ]; then
         CALL_QWEN_IMAGE_RESULT="curl错误:$(cat "${curl_stderr}" | head -1)"
         echo ""
@@ -424,12 +455,12 @@ run_batch() {
     echo "   读取行数: ${total_lines}"
 
     # ── 准备输出文件 ──────────────────────────────────────────
-    local run_ts
-    run_ts=$(date '+%Y%m%d_%H%M%S')
-    OUTPUT="${OUTPUT:-${OUTPUT_DIR}/image_batch_${run_ts}.tsv}"
-    local output_json="${OUTPUT%.tsv}.json"
-    local output_summary="${OUTPUT%.tsv}_summary.txt"
-
+        local run_ts
+        run_ts=$(date '+%Y%m%d_%H%M%S')
+        OUTPUT="${OUTPUT:-${OUTPUT_DIR}/image_batch_${run_ts}.tsv}"
+        local output_json="${OUTPUT%.tsv}.json"
+        local output_summary="${OUTPUT%.tsv}_summary.txt"
+        PERSIST_DEBUG_DIR="${OUTPUT_DIR}/debug_${run_ts}"
     # 检查输出文件是否可写
     if ! touch "${OUTPUT}" 2>/dev/null; then
         echo "[错误] 无法写入结果文件: ${OUTPUT}"
@@ -443,9 +474,8 @@ run_batch() {
     echo "   结果文件: ${OUTPUT}"
     echo "   摘要文件: ${output_summary}"
     echo ""
-
     # 表头
-    printf "mid\tuid\tcontent_preview\tpid\tlayer\tsuccess\terror\n" > "${OUTPUT}"
+    printf "mid\tuid\tcontent_preview\tpid\tlayer\traw_output\tsuccess\terror\n" > "${OUTPUT}"
 
     # ── 逐条处理 ──────────────────────────────────────────────
     local lineno=0
@@ -476,11 +506,10 @@ run_batch() {
         # 提取第一个 pid
         local first_pid
         first_pid=$(echo "${customer_info}" | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | head -1)
-
         if [ -z "${first_pid}" ]; then
             echo "   ❌ 未解析到 pid"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "" "" "false" "未解析到pid" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "" "" "" "false" "未解析到pid" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             continue
         fi
@@ -492,15 +521,14 @@ run_batch() {
         local dl_error
         dl_error=$(download_image "${first_pid}" "${img_path}" 2>&1)
         local dl_status=$?
-        if [ "${dl_status}" -ne 0 ]; then
-            echo "   ❌ ${dl_error}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "false" "${dl_error}" >> "${OUTPUT}"
-            fail_count=$((fail_count + 1))
-            rm -f "${img_path}"
-            continue
-        fi
-
+                if [ "${dl_status}" -ne 0 ]; then
+                    echo "   ❌ ${dl_error}"
+                    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                        "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "" "false" "${dl_error}" >> "${OUTPUT}"
+                    fail_count=$((fail_count + 1))
+                    rm -f "${img_path}"
+                    continue
+                fi
         local file_size
         file_size=$(stat -c %s "${img_path}" 2>/dev/null || echo 0)
         echo "   ✅ 图片下载成功 ${file_size} bytes"
@@ -513,11 +541,10 @@ run_batch() {
         local prompt="请对以下汽车行业图文博文进行分类。\\n博文文字：${content}\\n请结合文字和图片综合判断，直接输出：最终分类结果：【层级名称】"
         local classify_result
         classify_result=$(call_qwen_image "${mid}" "${compressed_path}" "${prompt}")
-
         if [ -z "${classify_result}" ]; then
             echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             rm -f "${img_path}" "${compressed_path}"
             continue
@@ -525,12 +552,11 @@ run_batch() {
 
         # 提取层级标签
         local layer
-        layer=$(echo "${classify_result}" | grep -oE '认知层|兴趣层|考虑层' | tail -1)
-        [ -z "${layer}" ] && layer="未识别"
+        layer=$(extract_layer "${classify_result}")
 
         echo "   ✅ 分类结果: ${layer}"
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "${layer}" "true" "" >> "${OUTPUT}"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "${layer}" "${classify_result}" "true" "" >> "${OUTPUT}"
         success_count=$((success_count + 1))
 
         # 写入 JSON
@@ -567,7 +593,7 @@ run_batch() {
         echo "成功率:       $([ "${processed}" -gt 0 ] && echo "scale=1; ${success_count}*100/${processed}" | bc || echo "N/A")%"
         echo "============================================"
         if [ "${DEBUG}" -eq 1 ]; then
-            echo "API 调试日志目录: ${TMP_DIR}"
+            echo "API 调试日志目录: ${PERSIST_DEBUG_DIR}"
         fi
     } | tee "${output_summary}"
 
