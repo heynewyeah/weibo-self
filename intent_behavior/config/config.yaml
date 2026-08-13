@@ -7,7 +7,7 @@
 api:
   url: "http://10.1.126.27:8087/v1/chat/completions"
   model: "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"
-  max_tokens: 128          # 分类任务只需输出标签，128 足够
+  max_tokens: 512          # 分类任务只需输出标签，128 足够
   temperature: 0.0         # 保证确定性/一致性
   top_p: 1.0
   top_k: 0

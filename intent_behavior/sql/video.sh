@@ -290,7 +290,7 @@ call_qwen_image() {
                     {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
                 ]}
             ],
-            \"max_tokens\": 128,
+            \"max_tokens\": 512,
             \"top_p\": 1.0,
             \"top_k\": 0,
             \"seed\": 42,
