@@ -286,7 +286,8 @@ run_batch() {
 
     if hdfs dfs -test -d "${input_file}" 2>/dev/null; then
         echo ">> 从 HDFS 目录读取数据: ${input_file}"
-        hdfs dfs -cat "${input_file}/part-*" > "${local_input}" 2>/dev/null || {
+        # HDFS 目录下可能是 000000_0 / part-00001 等不同命名，统一用 /* 通配
+        hdfs dfs -cat "${input_file}/*" > "${local_input}" 2>/dev/null || {
             echo "[错误] 无法读取 HDFS 目录: ${input_file}"
             exit 1
         }

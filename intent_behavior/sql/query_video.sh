@@ -170,7 +170,7 @@ echo "输出路径: ${HDFS_TARGET_PATH}"
 hdfs dfs -ls "${HDFS_TARGET_PATH}/" 2>/dev/null || echo "  (目录为空或路径不存在)"
 echo ""
 echo "--- 前 5 条数据预览 (mid / uid / media_id / customer_info前80字 / dt) ---"
-hdfs dfs -cat "${HDFS_TARGET_PATH}/part-*" 2>/dev/null \
+hdfs dfs -cat "${HDFS_TARGET_PATH}/*" 2>/dev/null \
     | head -5 \
     | awk -F'\t' '{printf "mid=%-20s uid=%-12s media_id=%-22s dt=%s info=%.80s\n", $1, $2, $4, $6, $5}'
 echo "========================================================"
