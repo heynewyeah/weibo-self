@@ -49,6 +49,9 @@ DEFAULT_PID="006mX07Rly8ifv3xs5535j30ud0plk1m"
 DEFAULT_TEXT="比亚迪宋L实拍来了！外观绝了，这个颜色真的太好看了，内饰也很精致，大家觉得怎么样？"
 IMG_URL_PATTERN="https://wx2.sinaimg.cn/mw690/{pid}.jpg"
 
+# 系统提示词：与 batch_classify_3layer.sh / config.yaml 对齐
+SYS_PROMPT="你是一个汽车行业博文营销分层分类器。请将博文分类到以下3个营销层级之一。\\n\\n可选层级：\\n【认知层】— 主打品牌曝光，高传播高热度，让用户认知品牌，容易形成传播趋势。\\n  典型内容：精美TVC、功能解读类、知识科普类、生活记录情绪共鸣类、话题承接内容、品牌官方宣传片、新车发布会、品牌联名活动。\\n  特征：以品牌/产品曝光为核心目的，传播性强，但未必包含深度产品信息或购买引导。\\n\\n【兴趣层】— 含品牌词，互动率较高，引发讨论、互动，提升用户对产品的兴趣。\\n  典型内容：KOL对比/评测内容、UGC种草内容、产品功能体验分享、试驾vlog、车型亮点解读、用户讨论帖。\\n  特征：有具体产品/品牌的信息，能引发用户兴趣和互动讨论，但尚未涉及具体购买决策信息。\\n\\n【考虑层】— 产品真实测评、竞品横评对比，价格优惠信息，参数分析，帮助用户完成决策。\\n  典型内容：优惠促销活动内容、竞品横评对比、价格/落地价讨论、参数配置对比、用户购车决策分享、购车攻略、经销商活动。\\n  特征：包含帮助用户做出购买决策的具体信息，如价格、优惠、对比、参数、购买渠道等。\\n\\n分类原则：\\n1. 优先看博文的核心目的：是让用户「知道品牌」→认知层；「产生兴趣」→兴趣层；「辅助决策」→考虑层\\n2. 如果博文同时涉及多个层级，按最深层级归类（如同时有品牌曝光和价格优惠，归考虑层）\\n3. 如果博文与汽车行业完全无关，归为【认知层】（兜底，因为广告博文至少有品牌曝光属性）\\n4. 先进行分析推理\\n5. 分析完成后，单独一行输出最终结论，格式必须是：最终分类结果：【层级名称】"
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # 默认输出到 /tmp，避免跨 Linux 用户权限问题
 DEFAULT_OUTPUT_DIR="/tmp/image_test_output"
@@ -240,7 +243,7 @@ call_qwen_image() {
         payload="{
             \"model\": \"${MODEL}\",
             \"messages\": [
-                {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文严格分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。只能输出固定格式：最终分类结果：【层级名称】。不要输出任何解释、分析或额外内容。\"},
+                {\"role\": \"system\", \"content\": \"${SYS_PROMPT}\"},
                 {\"role\": \"user\", \"content\": [
                     {\"type\": \"text\", \"text\": \"${prompt}\"},
                     {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
@@ -380,7 +383,7 @@ run_single() {
 
     echo ">> [3/3] 图文博文分类..."
     echo "   博文文字: ${TEXT}"
-    local prompt="请对以下汽车行业图文博文进行分类。\\n博文文字：${TEXT}\\n请结合文字和图片综合判断，直接输出：最终分类结果：【层级名称】"
+    local prompt="请对以下汽车行业图文博文进行营销分层分类。\\n\\n博文文字内容：\\n${TEXT}\\n\\n博文配图已附上，请结合文字和图片综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
     local classify_result
     classify_result=$(call_qwen_image "single_${PID}" "${save_path}" "${prompt}")
 
@@ -544,7 +547,7 @@ run_batch() {
         compress_image_if_needed "${img_path}" "${compressed_path}"
 
         echo "   → 调用模型分类..."
-        local prompt="请对以下汽车行业图文博文进行分类。\\n博文文字：${content}\\n请结合文字和图片综合判断，直接输出：最终分类结果：【层级名称】"
+        local prompt="请对以下汽车行业图文博文进行营销分层分类。\\n\\n博文文字内容：\\n${content}\\n\\n博文配图已附上，请结合文字和图片综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
         local classify_result
         classify_result=$(call_qwen_image "${mid}" "${compressed_path}" "${prompt}")
         if [ -z "${classify_result}" ]; then
