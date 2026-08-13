@@ -15,7 +15,8 @@
 #
 # 输出路径：
 #   - 单条：终端实时输出
-#   - 批量：默认 output/image_batch_<时间戳>.tsv 和 .json
+#   - 批量：默认 /tmp/image_test_output/image_batch_<时间戳>.tsv 和 .json
+#           （避免项目目录 output/ 因用户权限不同导致写入失败）
 #
 # 用法：
 #   # 单条模式（默认）
@@ -23,8 +24,11 @@
 #   bash sql/image.sh --pid "006mX07Rly8ifv3xs5535j30ud0plk1m" --text "比亚迪宋L实拍..."
 #
 #   # 批量模式
-#   bash sql/image.sh --mode batch --input /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260731
-#   bash sql/image.sh --mode batch --input /path/to/image_data.tsv --limit 10 --output /path/to/result.tsv
+#   bash sql/image.sh --mode batch --input /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701
+#   bash sql/image.sh --mode batch --input /path/to/image_data.tsv --limit 10 --output-dir /path/to/writable/dir
+#
+#   # 开启 API 调试日志（保存每次请求/响应原始内容）
+#   bash sql/image.sh --mode batch --input ... --debug
 #
 # 运行时间预估：
 #   - 单条：约 10~30 秒
@@ -46,29 +50,30 @@ DEFAULT_TEXT="比亚迪宋L实拍来了！外观绝了，这个颜色真的太�
 IMG_URL_PATTERN="https://wx2.sinaimg.cn/mw690/{pid}.jpg"
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-PROJECT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
-OUTPUT_DIR="${PROJECT_DIR}/output"
+# 默认输出到 /tmp，避免跨 Linux 用户权限问题
+DEFAULT_OUTPUT_DIR="/tmp/image_test_output"
 TMP_DIR="/tmp/image_test_$$"
 
-mkdir -p "${TMP_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${TMP_DIR}"
 trap 'rm -rf "${TMP_DIR}"; echo ""; echo "[清理] 临时文件已清理"' EXIT
 
 # ==================== 解析参数 ====================
 MODE="single"
 INPUT=""
+OUTPUT_DIR=""
 OUTPUT=""
 PID=""
 TEXT=""
 LIMIT=0
+DEBUG=0
 
 usage() {
     echo "用法:"
     echo "  单条模式: bash sql/image.sh [--pid PID] [--text '博文内容']"
-    echo "  批量模式: bash sql/image.sh --mode batch --input <hdfs路径或本地tsv> [--output <结果文件>] [--limit N]"
+    echo "  批量模式: bash sql/image.sh --mode batch --input <hdfs路径或本地tsv> [--output-dir <可写目录>] [--output <结果文件>] [--limit N] [--debug]"
     exit 1
 }
 
-# 简单解析 --key value 形式参数
 while [ $# -gt 0 ]; do
     case "$1" in
         --mode)
@@ -77,6 +82,10 @@ while [ $# -gt 0 ]; do
             ;;
         --input)
             INPUT="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
             shift 2
             ;;
         --output)
@@ -95,6 +104,10 @@ while [ $# -gt 0 ]; do
             LIMIT="$2"
             shift 2
             ;;
+        --debug)
+            DEBUG=1
+            shift
+            ;;
         -h|--help)
             usage
             ;;
@@ -107,41 +120,177 @@ done
 
 PID="${PID:-${DEFAULT_PID}}"
 TEXT="${TEXT:-${DEFAULT_TEXT}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${DEFAULT_OUTPUT_DIR}}"
 
 # ==================== 公共函数 ====================
 
+# 检查目录是否可写
+check_writable_dir() {
+    local dir="$1"
+    if [ ! -d "${dir}" ]; then
+        mkdir -p "${dir}" 2>/dev/null || {
+            echo "[错误] 无法创建输出目录: ${dir}"
+            return 1
+        }
+    fi
+    if [ ! -w "${dir}" ]; then
+        echo "[错误] 输出目录无写权限: ${dir}"
+        return 1
+    fi
+    return 0
+}
+
+# 压缩图片（如果图片过大）
+# 策略：优先用 ImageMagick convert，否则用 Python PIL，否则返回原图路径
+compress_image_if_needed() {
+    local input_path="$1"
+    local output_path="$2"
+    local max_size_kb=500
+    local max_pixels=1024
+
+    local file_size_kb
+    file_size_kb=$(stat -c %s "${input_path}" 2>/dev/null | awk '{print int($1/1024)}')
+
+    if [ "${file_size_kb}" -le "${max_size_kb}" ]; then
+        cp "${input_path}" "${output_path}"
+        echo "无需压缩"
+        return 0
+    fi
+
+    echo "图片过大(${file_size_kb}KB)，尝试压缩..."
+
+    if command -v convert &>/dev/null; then
+        convert "${input_path}" -resize "${max_pixels}x${max_pixels}>" -quality 85 "${output_path}" 2>/dev/null && {
+            local new_size
+            new_size=$(stat -c %s "${output_path}" 2>/dev/null | awk '{print int($1/1024)}')
+            echo "已压缩至 ${new_size}KB (ImageMagick)"
+            return 0
+        }
+    fi
+
+    if python3 -c "from PIL import Image" 2>/dev/null; then
+        python3 - <<PYEOF
+from PIL import Image
+import sys
+img = Image.open("${input_path}")
+img.thumbnail((${max_pixels}, ${max_pixels}))
+img.save("${output_path}", quality=85, optimize=True)
+PYEOF
+        if [ -f "${output_path}" ]; then
+            local new_size
+            new_size=$(stat -c %s "${output_path}" 2>/dev/null | awk '{print int($1/1024)}')
+            echo "已压缩至 ${new_size}KB (PIL)"
+            return 0
+        fi
+    fi
+
+    echo "未安装 ImageMagick/PIL，使用原图（可能请求过大导致 API 失败）"
+    cp "${input_path}" "${output_path}"
+    return 0
+}
+
 # 调用 Qwen3.6 多模态分类
-# 参数：图片路径、提示词
+# 参数：mid(用于日志)、图片路径、提示词
 # 返回：模型输出文本（失败时返回空字符串）
+# 全局变量 DEBUG 控制是否保存原始响应
+CALL_QWEN_IMAGE_RESULT=""
 call_qwen_image() {
-    local img_path="$1"
-    local prompt="$2"
+    local mid="$1"
+    local img_path="$2"
+    local prompt="$3"
+    CALL_QWEN_IMAGE_RESULT=""
 
     local img_b64
     img_b64=$(base64 -w 0 "${img_path}" 2>/dev/null)
     if [ -z "${img_b64}" ]; then
+        CALL_QWEN_IMAGE_RESULT="图片转base64失败"
         echo ""
         return 1
     fi
 
-    local resp
-    resp=$(curl -s --max-time 120 -X POST "${API_URL}" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"model\": \"${MODEL}\",
-            \"messages\": [
-                {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。直接输出：最终分类结果：【层级名称】\"},
-                {\"role\": \"user\", \"content\": [
-                    {\"type\": \"text\", \"text\": \"${prompt}\"},
-                    {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
-                ]}
-            ],
-            \"max_tokens\": 512,
-            \"temperature\": 0.0,
-            \"chat_template_kwargs\": {\"enable_thinking\": false}
-        }" 2>/dev/null)
+    local payload debug_log curl_stderr http_code resp
+    payload="{
+        \"model\": \"${MODEL}\",
+        \"messages\": [
+            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。直接输出：最终分类结果：【层级名称】\"},
+            {\"role\": \"user\", \"content\": [
+                {\"type\": \"text\", \"text\": \"${prompt}\"},
+                {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
+            ]}
+        ],
+        \"max_tokens\": 512,
+        \"temperature\": 0.0,
+        \"chat_template_kwargs\": {\"enable_thinking\": false}
+    }"
 
-    echo "${resp}" | jq -r '.choices[0].message.content // ""'
+    debug_log="${TMP_DIR}/api_debug_${mid}.log"
+    curl_stderr="${TMP_DIR}/api_curl_err_${mid}.log"
+
+    # 保存请求体（调试用）
+    if [ "${DEBUG}" -eq 1 ]; then
+        echo "=== REQUEST ===" > "${debug_log}"
+        echo "mid=${mid}" >> "${debug_log}"
+        echo "img_path=${img_path}" >> "${debug_log}"
+        echo "img_size_bytes=$(stat -c %s "${img_path}" 2>/dev/null || echo 0)" >> "${debug_log}"
+        echo "prompt=${prompt}" >> "${debug_log}"
+        echo "" >> "${debug_log}"
+        echo "=== CURL RESPONSE ===" >> "${debug_log}"
+    fi
+
+    resp=$(curl -s --max-time 180 -X POST "${API_URL}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        -w "\nHTTP_CODE:%{http_code}" \
+        2>"${curl_stderr}")
+
+    http_code=$(echo "${resp}" | grep -oE 'HTTP_CODE:[0-9]+' | cut -d: -f2)
+    resp_body=$(echo "${resp}" | sed '/HTTP_CODE:/d')
+
+    if [ "${DEBUG}" -eq 1 ]; then
+        echo "http_code=${http_code}" >> "${debug_log}"
+        echo "${resp_body}" >> "${debug_log}"
+        echo "curl_stderr:" >> "${debug_log}"
+        cat "${curl_stderr}" >> "${debug_log}" 2>/dev/null || true
+        echo "Debug日志: ${debug_log}"
+    fi
+
+    if [ -s "${curl_stderr}" ]; then
+        CALL_QWEN_IMAGE_RESULT="curl错误:$(cat "${curl_stderr}" | head -1)"
+        echo ""
+        return 1
+    fi
+
+    if [ "${http_code}" != "200" ]; then
+        CALL_QWEN_IMAGE_RESULT="HTTP${http_code}"
+        echo ""
+        return 1
+    fi
+
+    if [ -z "${resp_body}" ]; then
+        CALL_QWEN_IMAGE_RESULT="响应体为空"
+        echo ""
+        return 1
+    fi
+
+    # 检查 choices 是否存在
+    local choices_len
+    choices_len=$(echo "${resp_body}" | jq '.choices | length' 2>/dev/null || echo 0)
+    if [ "${choices_len}" -eq 0 ]; then
+        CALL_QWEN_IMAGE_RESULT="API无choices:${resp_body:0:200}"
+        echo ""
+        return 1
+    fi
+
+    local content
+    content=$(echo "${resp_body}" | jq -r '.choices[0].message.content // ""')
+    if [ -z "${content}" ]; then
+        CALL_QWEN_IMAGE_RESULT="模型content为空"
+        echo ""
+        return 1
+    fi
+
+    CALL_QWEN_IMAGE_RESULT="OK"
+    echo "${content}"
 }
 
 # 下载图片
@@ -161,13 +310,6 @@ download_image() {
         return 1
     fi
     return 0
-}
-
-# 从 JSON 数组字符串中提取 pid 列表
-# 例如：["pid1","pid2"] → pid1 pid2
-extract_pids() {
-    local customer_info="$1"
-    echo "${customer_info}" | tr -d '[]"' | tr ',' '\n' | sed '/^$/d'
 }
 
 # ==================== 单条模式 ====================
@@ -203,10 +345,10 @@ run_single() {
     echo "   博文文字: ${TEXT}"
     local prompt="请对以下汽车行业图文博文进行分类。\\n博文文字：${TEXT}\\n请结合文字和图片综合判断，直接输出：最终分类结果：【层级名称】"
     local classify_result
-    classify_result=$(call_qwen_image "${save_path}" "${prompt}")
+    classify_result=$(call_qwen_image "single_${PID}" "${save_path}" "${prompt}")
 
     if [ -z "${classify_result}" ]; then
-        echo "   ❌ 模型返回为空，可能 API 调用失败"
+        echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
         exit 1
     fi
 
@@ -231,14 +373,22 @@ run_batch() {
         usage
     fi
 
+    # 检查输出目录可写性
+    if ! check_writable_dir "${OUTPUT_DIR}"; then
+        echo "[建议] 使用 --output-dir 指定一个有写权限的目录，例如："
+        echo "       bash sql/image.sh --mode batch --input ... --output-dir /tmp/my_output"
+        exit 1
+    fi
+
     local input_file="${INPUT}"
     local local_input="${TMP_DIR}/batch_input.tsv"
 
     echo "============================================"
     echo "  图片全链路测试 — 批量模式"
-    echo "  时间:     $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "  输入:     ${input_file}"
-    echo "  模型:     ${MODEL}"
+    echo "  时间:       $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  输入:       ${input_file}"
+    echo "  输出目录:   ${OUTPUT_DIR}"
+    echo "  模型:       ${MODEL}"
     echo "============================================"
     echo ""
 
@@ -251,7 +401,6 @@ run_batch() {
 
     if hdfs dfs -test -d "${input_file}" 2>/dev/null; then
         echo ">> 从 HDFS 目录读取数据: ${input_file}"
-        # HDFS 目录下可能是 000000_0 / part-00001 等不同命名，统一用 /* 通配
         hdfs dfs -cat "${input_file}/*" > "${local_input}" 2>/dev/null || {
             echo "[错误] 无法读取 HDFS 目录: ${input_file}"
             exit 1
@@ -280,6 +429,16 @@ run_batch() {
     OUTPUT="${OUTPUT:-${OUTPUT_DIR}/image_batch_${run_ts}.tsv}"
     local output_json="${OUTPUT%.tsv}.json"
     local output_summary="${OUTPUT%.tsv}_summary.txt"
+
+    # 检查输出文件是否可写
+    if ! touch "${OUTPUT}" 2>/dev/null; then
+        echo "[错误] 无法写入结果文件: ${OUTPUT}"
+        exit 1
+    fi
+    if ! touch "${output_json}" 2>/dev/null || ! touch "${output_summary}" 2>/dev/null; then
+        echo "[错误] 无法写入 JSON/摘要文件到 ${OUTPUT_DIR}"
+        exit 1
+    fi
 
     echo "   结果文件: ${OUTPUT}"
     echo "   摘要文件: ${output_summary}"
@@ -327,6 +486,7 @@ run_batch() {
         fi
 
         local img_path="${TMP_DIR}/${mid}_${first_pid}.jpg"
+        local compressed_path="${TMP_DIR}/${mid}_${first_pid}_compressed.jpg"
 
         echo "   → 下载图片 pid=${first_pid}"
         local dl_error
@@ -345,17 +505,21 @@ run_batch() {
         file_size=$(stat -c %s "${img_path}" 2>/dev/null || echo 0)
         echo "   ✅ 图片下载成功 ${file_size} bytes"
 
+        # 图片压缩
+        echo "   → 检查图片大小..."
+        compress_image_if_needed "${img_path}" "${compressed_path}"
+
         echo "   → 调用模型分类..."
         local prompt="请对以下汽车行业图文博文进行分类。\\n博文文字：${content}\\n请结合文字和图片综合判断，直接输出：最终分类结果：【层级名称】"
         local classify_result
-        classify_result=$(call_qwen_image "${img_path}" "${prompt}")
+        classify_result=$(call_qwen_image "${mid}" "${compressed_path}" "${prompt}")
 
         if [ -z "${classify_result}" ]; then
-            echo "   ❌ 模型返回为空"
+            echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
             printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "false" "模型返回为空" >> "${OUTPUT}"
+                "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
-            rm -f "${img_path}"
+            rm -f "${img_path}" "${compressed_path}"
             continue
         fi
 
@@ -378,7 +542,7 @@ run_batch() {
         printf '{"mid":"%s","uid":"%s","content_preview":"%s","pid":"%s","layer":"%s","success":true,"raw_output":"%s"}' \
             "${mid}" "${uid}" "${content:0:50}" "${first_pid}" "${layer}" "${classify_result}" >> "${output_json}"
 
-        rm -f "${img_path}"
+        rm -f "${img_path}" "${compressed_path}"
     done < "${local_input}"
 
     echo "]" >> "${output_json}"
@@ -402,6 +566,9 @@ run_batch() {
         echo "失败:         ${fail_count}"
         echo "成功率:       $([ "${processed}" -gt 0 ] && echo "scale=1; ${success_count}*100/${processed}" | bc || echo "N/A")%"
         echo "============================================"
+        if [ "${DEBUG}" -eq 1 ]; then
+            echo "API 调试日志目录: ${TMP_DIR}"
+        fi
     } | tee "${output_summary}"
 
     # 失败率超过 20% 时非零退出
