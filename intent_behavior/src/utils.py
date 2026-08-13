@@ -83,13 +83,29 @@ def extract_label(model_output: str, valid_labels: List[str]) -> Optional[str]:
     for m in reversed(bracket_matches):
         if m in label_set:
             return m
-
     # 策略3：取最后一行非空文本，模糊匹配
     lines = [line.strip() for line in model_output.strip().split('\n') if line.strip()]
     if lines:
         last_line = lines[-1]
         for label in valid_labels:
             if label in last_line:
+                return label
+
+    # 策略4：在全文中搜索有效标签（容错模型漏掉格式的情况）
+    for label in reversed(valid_labels):
+        if label in model_output:
+            return label
+
+    # 策略5：尝试英文/拼音关键词映射
+    keyword_map = {
+        "认知层": ["awareness", "cognition", "认知"],
+        "兴趣层": ["interest", "兴趣"],
+        "考虑层": ["consideration", "考虑"],
+    }
+    lowered = model_output.lower()
+    for label, keywords in keyword_map.items():
+        for kw in keywords:
+            if kw in lowered:
                 return label
 
     return None

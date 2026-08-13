@@ -236,41 +236,47 @@ call_qwen_image() {
         return 1
     fi
 
-    local payload debug_log curl_stderr http_code resp
-    payload="{
-        \"model\": \"${MODEL}\",
-        \"messages\": [
-            {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文严格分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。只能输出固定格式：最终分类结果：【层级名称】。不要输出任何解释、分析或额外内容。\"},
-            {\"role\": \"user\", \"content\": [
-                {\"type\": \"text\", \"text\": \"${prompt}\"},
-                {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
-            ]}
-        ],
-        \"max_tokens\": 512,
-        \"temperature\": 0.0,
-        \"chat_template_kwargs\": {\"enable_thinking\": false}
-    }"
-
-    debug_log="${TMP_DIR}/api_debug_${mid}.log"
-    curl_stderr="${TMP_DIR}/api_curl_err_${mid}.log"
-
+        local payload payload_file debug_log curl_stderr http_code resp
+        payload="{
+            \"model\": \"${MODEL}\",
+            \"messages\": [
+                {\"role\": \"system\", \"content\": \"你是一个汽车行业博文营销分层分类器。将博文严格分类到以下3个层级之一：【认知层】品牌曝光传播；【兴趣层】引发讨论互动；【考虑层】辅助购买决策。只能输出固定格式：最终分类结果：【层级名称】。不要输出任何解释、分析或额外内容。\"},
+                {\"role\": \"user\", \"content\": [
+                    {\"type\": \"text\", \"text\": \"${prompt}\"},
+                    {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
+                ]}
+            ],
+            \"max_tokens\": 128,
+            \"top_p\": 1.0,
+            \"top_k\": 0,
+            \"seed\": 42,
+            \"thinking\": {\"type\": \"disabled\"},
+            \"reasoning\": {\"effort\": \"none\"},
+            \"temperature\": 0.0,
+            \"chat_template_kwargs\": {\"enable_thinking\": false}
+        }"
+        payload_file="${TMP_DIR}/payload_${mid}.json"
+        printf '%s' "${payload}" > "${payload_file}"
+    
+        debug_log="${TMP_DIR}/api_debug_${mid}.log"
+        curl_stderr="${TMP_DIR}/api_curl_err_${mid}.log"
     # 保存请求体（调试用）
     if [ "${DEBUG}" -eq 1 ]; then
         echo "=== REQUEST ===" > "${debug_log}"
         echo "mid=${mid}" >> "${debug_log}"
         echo "img_path=${img_path}" >> "${debug_log}"
         echo "img_size_bytes=$(stat -c %s "${img_path}" 2>/dev/null || echo 0)" >> "${debug_log}"
-        echo "prompt=${prompt}" >> "${debug_log}"
-        echo "" >> "${debug_log}"
-        echo "=== CURL RESPONSE ===" >> "${debug_log}"
-    fi
-
-    resp=$(curl -s --max-time 180 -X POST "${API_URL}" \
-        -H "Content-Type: application/json" \
-        -d "${payload}" \
-        -w "\nHTTP_CODE:%{http_code}" \
-        2>"${curl_stderr}")
-
+                echo "prompt=${prompt}" >> "${debug_log}"
+                echo "payload_file=${payload_file}" >> "${debug_log}"
+                echo "" >> "${debug_log}"
+                echo "=== CURL RESPONSE ===" >> "${debug_log}"
+            fi
+        
+            resp=$(curl -s --max-time 180 -X POST "${API_URL}" \
+                -H "Content-Type: application/json" \
+                --data @"${payload_file}" \
+                -w "\nHTTP_CODE:%{http_code}" \
+                2>"${curl_stderr}")
     http_code=$(echo "${resp}" | grep -oE 'HTTP_CODE:[0-9]+' | cut -d: -f2)
     resp_body=$(echo "${resp}" | sed '/HTTP_CODE:/d')
 

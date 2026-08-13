@@ -23,8 +23,13 @@ class VLLMClient:
         """
         self.url = config["url"]
         self.model = config["model"]
-        self.max_tokens = config.get("max_tokens", 512)
+        self.max_tokens = config.get("max_tokens", 128)
         self.temperature = config.get("temperature", 0.0)
+        self.top_p = config.get("top_p", 1.0)
+        self.top_k = config.get("top_k", 0)
+        self.seed = config.get("seed")
+        self.thinking = config.get("thinking", {"type": "disabled"})
+        self.reasoning = config.get("reasoning", {"effort": "none"})
         self.enable_thinking = config.get("enable_thinking", False)
         self.timeout = config.get("timeout", 60)
         self.max_retry = config.get("max_retry", 3)
@@ -50,7 +55,13 @@ class VLLMClient:
             ],
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "thinking": self.thinking,
+            "reasoning": self.reasoning,
         }
+        if self.seed is not None:
+            payload["seed"] = self.seed
         if self.enable_thinking is not None:
             payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
         return payload
