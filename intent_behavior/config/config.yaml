@@ -91,7 +91,6 @@ media:
     download_timeout: 30
     # 单次请求最大图片数量
     max_images_per_request: 3
-
   video:
     # 视频信息查询的hive表
     hive_table: "ods_ad_sfst_media_info"
@@ -99,13 +98,16 @@ media:
     showbatch_api: "http://i.iotep.tools.biz.weibo.com/api/v1/video/media/showBatch"
     # 默认 customer_id（需替换为实际值）
     default_customer_id: "2608812381"
-    # 抽帧数量
+    # 抽帧数量（frame 模式下生效）
     extract_frames_count: 3
-    # 视频下载超时
+    # 视频下载超时（秒）
     download_timeout: 120
-    # 是否启用视频处理（当前为false，后续开启）
-    enabled: false
-
+    # 是否启用视频处理（true 时走完整视频链路，false 时退化为文本分类）
+    enabled: true
+    # 视频处理模式：
+    #   cover - 方案A：使用封面图（快速，无需下载视频，已验证可用）
+    #   frame - 方案B：下载视频并用 OpenCV 抽帧（需 opencv-python-headless）
+    video_mode: "cover"
 # 数据提取配置（新增）
 # 支持三种 source_type: hive / local / hdfs
 extractor:

@@ -4,9 +4,15 @@
 # =============================================================
 # 功能：
 #   1. 单条模式：指定真实 fid + customer_id + 博文内容，获取视频信息、
-#      下载封面图，并用封面图做视频分类（方案A）
+#      处理视频（封面图或抽帧），并调用 Qwen3.6 多模态分类
 #   2. 批量模式：从 TSV 文件读取多条视频博文（如 query_video.sh 输出），
-#      逐条获取封面图、调用 Qwen3.6 分类、记录结果，并生成统计报告
+#      逐条处理、调用 Qwen3.6 分类、记录结果，并生成统计报告
+#
+# 视频处理模式（--video-mode）：
+#   cover（默认）：调用 showBatch API 获取封面图 URL → 下载封面图 → 多模态分类
+#                  快速，无需下载视频，已验证可用
+#   frame         ：调用 showBatch API 获取视频 URL → 下载视频 → Python/OpenCV 抽帧
+#                  → 多模态分类（需服务器已安装 opencv-python-headless）
 #
 # 数据来源：
 #   - 单条：命令行传入的真实 fid + customer_id + 真实博文内容
@@ -20,23 +26,34 @@
 #           （避免项目目录 output/ 因用户权限不同导致写入失败）
 #
 # 用法：
-#   # 单条模式（默认）
+#   # 单条模式（默认，cover 模式）
 #   bash sql/video.sh
 #   bash sql/video.sh --fid "2362904:4826598285967434" --cid "2608812381" --text "吉利银河M9..."
 #
-#   # 批量模式
-#   bash sql/video.sh --mode batch --input /dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701
-#   bash sql/video.sh --mode batch --input /path/to/video_data.tsv --limit 10 --output-dir /path/to/writable/dir
+#   # 单条模式，使用抽帧
+#   bash sql/video.sh --video-mode frame --fid "2362904:4826598285967434" --cid "2608812381"
+#
+#   # 批量模式（cover 模式）
+#   bash sql/video.sh --mode batch \
+#     --input /dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701 \
+#     --limit 10
+#
+#   # 批量模式（frame 模式）
+#   bash sql/video.sh --mode batch --video-mode frame \
+#     --input /dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701 \
+#     --limit 5 --debug
 #
 #   # 开启 API 调试日志
 #   bash sql/video.sh --mode batch --input ... --debug
 #
 # 运行时间预估：
-#   - 单条：约 30~120 秒
-#   - 批量：约 N × 30~120 秒（N 为视频个数）
+#   - 单条 cover：约 10~30 秒
+#   - 单条 frame：约 60~180 秒（含视频下载）
+#   - 批量：约 N × 单条耗时
 #
 # 作者：xuanyu11
 # 创建时间：2026-08-13
+# 更新时间：2026-08-14（新增 frame 模式）
 # =============================================================
 
 set -uo pipefail
@@ -63,6 +80,7 @@ trap 'rm -rf "${TMP_DIR}"; echo ""; echo "[清理] 临时文件已清理"' EXIT
 
 # ==================== 解析参数 ====================
 MODE="single"
+VIDEO_MODE="cover"   # cover | frame
 INPUT=""
 OUTPUT_DIR=""
 OUTPUT=""
@@ -71,11 +89,17 @@ CID=""
 TEXT=""
 LIMIT=0
 DEBUG=0
+FRAMES=3             # frame 模式下抽帧数量
 
 usage() {
     echo "用法:"
-    echo "  单条模式: bash sql/video.sh [--fid FID] [--cid CUSTOMER_ID] [--text '博文内容']"
-    echo "  批量模式: bash sql/video.sh --mode batch --input <hdfs路径或本地tsv> [--output-dir <可写目录>] [--output <结果文件>] [--limit N] [--debug]"
+    echo "  单条模式: bash sql/video.sh [--video-mode cover|frame] [--fid FID] [--cid CUSTOMER_ID] [--text '博文内容']"
+    echo "  批量模式: bash sql/video.sh --mode batch [--video-mode cover|frame] --input <hdfs路径或本地tsv>"
+    echo "            [--output-dir <可写目录>] [--output <结果文件>] [--limit N] [--frames N] [--debug]"
+    echo ""
+    echo "  --video-mode cover  使用封面图（默认，快速）"
+    echo "  --video-mode frame  下载视频并用 OpenCV 抽帧（需 opencv-python-headless）"
+    echo "  --frames N          frame 模式下抽取帧数（默认 3）"
     exit 1
 }
 
@@ -83,6 +107,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --mode)
             MODE="$2"
+            shift 2
+            ;;
+        --video-mode)
+            VIDEO_MODE="$2"
             shift 2
             ;;
         --input)
@@ -113,6 +141,10 @@ while [ $# -gt 0 ]; do
             LIMIT="$2"
             shift 2
             ;;
+        --frames)
+            FRAMES="$2"
+            shift 2
+            ;;
         --debug)
             DEBUG=1
             shift
@@ -132,6 +164,12 @@ CID="${CID:-${DEFAULT_CID}}"
 TEXT="${TEXT:-${DEFAULT_TEXT}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DEFAULT_OUTPUT_DIR}}"
 
+# 校验 video-mode
+if [ "${VIDEO_MODE}" != "cover" ] && [ "${VIDEO_MODE}" != "frame" ]; then
+    echo "[错误] --video-mode 只支持 cover 或 frame，当前: ${VIDEO_MODE}"
+    exit 1
+fi
+
 # ==================== 公共函数 ====================
 
 check_writable_dir() {
@@ -150,7 +188,6 @@ check_writable_dir() {
 }
 
 # 从模型原始输出中提取层级标签
-# 优先匹配中文三层；匹配不到时尝试英文/拼音关键词；仍失败返回"未识别"
 extract_layer() {
     local raw="$1"
     local layer
@@ -178,8 +215,9 @@ extract_layer() {
     esac
 }
 
-# 调用 showBatch API 获取视频信息（含封面图 URL）
-get_video_cover() {
+# 调用 showBatch API 获取视频信息（封面图 URL + 视频 URL）
+# 输出格式：cover_url\tvideo_url（tab 分隔）
+get_video_info() {
     local media_id="$1"
     local customer_id="$2"
 
@@ -194,11 +232,14 @@ get_video_cover() {
     api_status=$(echo "${api_resp}" | jq -r '.status // empty')
 
     if [ "${api_status}" != "200" ]; then
-        echo ""
+        echo -e "\t"
         return 1
     fi
 
-    echo "${api_resp}" | jq -r '.data[0].frontUrl // ""'
+    local cover_url video_url
+    cover_url=$(echo "${api_resp}" | jq -r '.data[0].frontUrl // .data[0].cover // ""')
+    video_url=$(echo "${api_resp}" | jq -r '.data[0].url // .data[0].mp4Url // ""')
+    printf '%s\t%s\n' "${cover_url}" "${video_url}"
 }
 
 # 下载封面图
@@ -217,7 +258,74 @@ download_cover() {
     return 0
 }
 
-# 压缩封面图（如果过大）
+# 下载视频
+download_video() {
+    local url="$1"
+    local save_path="$2"
+
+    local http_code file_size
+    http_code=$(curl -s -o "${save_path}" -w "%{http_code}" --max-time 300 "${url}" 2>/dev/null)
+    file_size=$(stat -c %s "${save_path}" 2>/dev/null || echo 0)
+
+    if [ "${http_code}" != "200" ] || [ "${file_size}" -lt 1024 ]; then
+        echo "视频下载失败 HTTP=${http_code} size=${file_size}B"
+        return 1
+    fi
+    echo "视频下载成功 ${file_size} bytes"
+    return 0
+}
+
+# 使用 Python/OpenCV 从视频中均匀抽帧
+# 参数：视频路径、输出目录、帧数
+# 返回：帧图片路径列表（每行一个路径），失败返回空
+extract_frames_opencv() {
+    local video_path="$1"
+    local output_dir="$2"
+    local num_frames="${3:-3}"
+
+    mkdir -p "${output_dir}"
+
+    python3 - <<PYEOF 2>/dev/null
+import cv2, os, sys
+
+video_path = "${video_path}"
+output_dir = "${output_dir}"
+num_frames = ${num_frames}
+
+cap = cv2.VideoCapture(video_path)
+if not cap.isOpened():
+    sys.exit(1)
+
+total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+if total <= 0:
+    cap.release()
+    sys.exit(1)
+
+actual_n = min(num_frames, total)
+if actual_n == 1:
+    indices = [total // 2]
+else:
+    step = total / actual_n
+    indices = [int(step * i + step / 2) for i in range(actual_n)]
+
+saved = []
+basename = os.path.splitext(os.path.basename(video_path))[0]
+for idx, frame_no in enumerate(indices):
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+    ret, frame = cap.read()
+    if not ret:
+        continue
+    out_path = os.path.join(output_dir, f"{basename}_frame{idx:02d}.jpg")
+    if cv2.imwrite(out_path, frame):
+        saved.append(out_path)
+
+cap.release()
+for p in saved:
+    print(p)
+PYEOF
+}
+
+# 压缩图片（如果过大）
 compress_image_if_needed() {
     local input_path="$1"
     local output_path="$2"
@@ -233,7 +341,7 @@ compress_image_if_needed() {
         return 0
     fi
 
-    echo "封面图过大(${file_size_kb}KB)，尝试压缩..."
+    echo "图片过大(${file_size_kb}KB)，尝试压缩..."
 
     if command -v convert &>/dev/null; then
         convert "${input_path}" -resize "${max_pixels}x${max_pixels}>" -quality 85 "${output_path}" 2>/dev/null && {
@@ -264,62 +372,72 @@ PYEOF
     return 0
 }
 
-# 调用 Qwen3.6 多模态分类
+# 调用 Qwen3.6 多模态分类（支持多张图片）
+# 参数：mid、图片路径列表（空格分隔）、提示词
+# 返回：模型输出文本（失败时返回空字符串）
 CALL_QWEN_IMAGE_RESULT=""
-call_qwen_image() {
+call_qwen_multimodal() {
     local mid="$1"
-    local img_path="$2"
-    local prompt="$3"
+    local prompt="$2"
+    shift 2
+    local img_paths=("$@")   # 剩余参数为图片路径列表
     CALL_QWEN_IMAGE_RESULT=""
 
-    local img_b64
-    img_b64=$(base64 -w 0 "${img_path}" 2>/dev/null)
-    if [ -z "${img_b64}" ]; then
-        CALL_QWEN_IMAGE_RESULT="图片转base64失败"
+    if [ ${#img_paths[@]} -eq 0 ]; then
+        CALL_QWEN_IMAGE_RESULT="无图片路径"
         echo ""
         return 1
     fi
 
-        local payload payload_file debug_log curl_stderr http_code resp resp_body
-        payload="{
-            \"model\": \"${MODEL}\",
-            \"messages\": [
-                {\"role\": \"system\", \"content\": \"${SYS_PROMPT}\"},
-                {\"role\": \"user\", \"content\": [
-                    {\"type\": \"text\", \"text\": \"${prompt}\"},
-                    {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}
-                ]}
-            ],
-            \"max_tokens\": 512,
-            \"top_p\": 1.0,
-            \"top_k\": 0,
-            \"seed\": 42,
-            \"thinking\": {\"type\": \"disabled\"},
-            \"reasoning\": {\"effort\": \"none\"},
-            \"temperature\": 0.0,
-            \"chat_template_kwargs\": {\"enable_thinking\": false}
-        }"
-        payload_file="${TMP_DIR}/payload_${mid}.json"
-        printf '%s' "${payload}" > "${payload_file}"
-    
-        debug_log="${TMP_DIR}/api_debug_${mid}.log"
-        curl_stderr="${TMP_DIR}/api_curl_err_${mid}.log"
+    # 构建 content 数组（文字 + 多张图片）
+    local content_items
+    content_items="{\"type\": \"text\", \"text\": \"${prompt}\"}"
+
+    for img_path in "${img_paths[@]}"; do
+        local img_b64
+        img_b64=$(base64 -w 0 "${img_path}" 2>/dev/null)
+        if [ -z "${img_b64}" ]; then
+            echo "   [警告] 图片转base64失败: ${img_path}" >&2
+            continue
+        fi
+        content_items="${content_items}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,${img_b64}\"}}"
+    done
+
+    local payload payload_file debug_log curl_stderr http_code resp resp_body
+    payload="{
+        \"model\": \"${MODEL}\",
+        \"messages\": [
+            {\"role\": \"system\", \"content\": \"${SYS_PROMPT}\"},
+            {\"role\": \"user\", \"content\": [${content_items}]}
+        ],
+        \"max_tokens\": 512,
+        \"top_p\": 1.0,
+        \"top_k\": 0,
+        \"seed\": 42,
+        \"thinking\": {\"type\": \"disabled\"},
+        \"reasoning\": {\"effort\": \"none\"},
+        \"temperature\": 0.0,
+        \"chat_template_kwargs\": {\"enable_thinking\": false}
+    }"
+    payload_file="${TMP_DIR}/payload_${mid}.json"
+    printf '%s' "${payload}" > "${payload_file}"
+
+    debug_log="${TMP_DIR}/api_debug_${mid}.log"
+    curl_stderr="${TMP_DIR}/api_curl_err_${mid}.log"
     if [ "${DEBUG}" -eq 1 ]; then
         echo "=== REQUEST ===" > "${debug_log}"
         echo "mid=${mid}" >> "${debug_log}"
-        echo "img_path=${img_path}" >> "${debug_log}"
-        echo "img_size_bytes=$(stat -c %s "${img_path}" 2>/dev/null || echo 0)" >> "${debug_log}"
-                echo "prompt=${prompt}" >> "${debug_log}"
-                echo "payload_file=${payload_file}" >> "${debug_log}"
-                echo "" >> "${debug_log}"
-                echo "=== CURL RESPONSE ===" >> "${debug_log}"
-            fi
-        
-            resp=$(curl -s --max-time 180 -X POST "${API_URL}" \
-                -H "Content-Type: application/json" \
-                --data @"${payload_file}" \
-                -w "\nHTTP_CODE:%{http_code}" \
-                2>"${curl_stderr}")
+        echo "img_count=${#img_paths[@]}" >> "${debug_log}"
+        echo "prompt=${prompt}" >> "${debug_log}"
+        echo "" >> "${debug_log}"
+        echo "=== CURL RESPONSE ===" >> "${debug_log}"
+    fi
+
+    resp=$(curl -s --max-time 180 -X POST "${API_URL}" \
+        -H "Content-Type: application/json" \
+        --data @"${payload_file}" \
+        -w "\nHTTP_CODE:%{http_code}" \
+        2>"${curl_stderr}")
     http_code=$(echo "${resp}" | grep -oE 'HTTP_CODE:[0-9]+' | cut -d: -f2)
     resp_body=$(echo "${resp}" | sed '/HTTP_CODE:/d')
 
@@ -336,7 +454,7 @@ call_qwen_image() {
     fi
 
     if [ -s "${curl_stderr}" ]; then
-        CALL_QWEN_IMAGE_RESULT="curl错误:$(cat "${curl_stderr}" | head -1)"
+        CALL_QWEN_IMAGE_RESULT="curl错误:$(head -1 "${curl_stderr}")"
         echo ""
         return 1
     fi
@@ -374,55 +492,131 @@ call_qwen_image() {
 }
 
 # 从 customer_info JSON 中提取 cover URL 和 fid
-extract_video_info() {
+extract_video_info_from_json() {
     local customer_info="$1"
     echo "${customer_info}" | jq -r '[.fid // "", .cover // ""] | @tsv' 2>/dev/null
+}
+
+# ==================== 核心处理函数 ====================
+
+# 处理单条视频：根据 VIDEO_MODE 获取图片（封面图或抽帧），返回图片路径数组
+# 参数：fid、customer_id、mid（用于临时文件命名）
+# 输出：图片路径列表（每行一个），失败输出空
+process_video_to_images() {
+    local fid="$1"
+    local cid="$2"
+    local mid="$3"
+
+    local video_info cover_url video_url
+    video_info=$(get_video_info "${fid}" "${cid}")
+    cover_url=$(echo "${video_info}" | awk -F'\t' '{print $1}')
+    video_url=$(echo "${video_info}" | awk -F'\t' '{print $2}')
+
+    if [ "${VIDEO_MODE}" = "frame" ]; then
+        # 方案B：下载视频 → OpenCV 抽帧
+        if [ -z "${video_url}" ]; then
+            echo "   ❌ 未获取到视频 URL（fid=${fid}）" >&2
+            return 1
+        fi
+        echo "   → 视频 URL: ${video_url}" >&2
+
+        local safe_fid="${fid//:/_}"
+        local video_path="${TMP_DIR}/${mid}_${safe_fid}.mp4"
+        local frames_dir="${TMP_DIR}/${mid}_${safe_fid}_frames"
+
+        echo "   → 下载视频..." >&2
+        local dl_msg
+        dl_msg=$(download_video "${video_url}" "${video_path}" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo "   ❌ ${dl_msg}" >&2
+            return 1
+        fi
+        echo "   ✅ ${dl_msg}" >&2
+
+        echo "   → OpenCV 抽帧（${FRAMES}帧）..." >&2
+        local frame_paths
+        frame_paths=$(extract_frames_opencv "${video_path}" "${frames_dir}" "${FRAMES}")
+        local frame_count
+        frame_count=$(echo "${frame_paths}" | grep -c '.' 2>/dev/null || echo 0)
+
+        if [ -z "${frame_paths}" ] || [ "${frame_count}" -eq 0 ]; then
+            echo "   ❌ 抽帧失败（OpenCV 未安装或视频损坏）" >&2
+            rm -f "${video_path}"
+            return 1
+        fi
+        echo "   ✅ 抽帧成功: ${frame_count} 帧" >&2
+        rm -f "${video_path}"
+        echo "${frame_paths}"
+
+    else
+        # 方案A（默认）：使用封面图
+        if [ -z "${cover_url}" ]; then
+            echo "   ❌ 未获取到封面图 URL（fid=${fid}）" >&2
+            return 1
+        fi
+        echo "   → 封面图 URL: ${cover_url}" >&2
+
+        local safe_fid="${fid//:/_}"
+        local cover_path="${TMP_DIR}/${mid}_${safe_fid}_cover.jpg"
+        local compressed_path="${TMP_DIR}/${mid}_${safe_fid}_cover_compressed.jpg"
+
+        echo "   → 下载封面图..." >&2
+        if ! download_cover "${cover_url}" "${cover_path}"; then
+            echo "   ❌ 封面图下载失败" >&2
+            return 1
+        fi
+        local file_size
+        file_size=$(stat -c %s "${cover_path}" 2>/dev/null || echo 0)
+        echo "   ✅ 封面图下载成功 ${file_size} bytes" >&2
+
+        compress_image_if_needed "${cover_path}" "${compressed_path}" >&2
+        echo "${compressed_path}"
+    fi
 }
 
 # ==================== 单条模式 ====================
 run_single() {
     echo "============================================"
     echo "  视频全链路测试 — 单条模式"
-    echo "  时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "  模型: ${MODEL}"
-    echo "  API:  ${API_URL}"
+    echo "  时间:       $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  模型:       ${MODEL}"
+    echo "  API:        ${API_URL}"
+    echo "  视频模式:   ${VIDEO_MODE}"
     echo "============================================"
     echo ""
 
     START_TS=$(date +%s)
 
-    echo ">> [1/3] 调用 showBatch API 获取视频信息..."
+    echo ">> [1/3] 获取视频信息..."
     echo "   fid:         ${FID}"
     echo "   customer_id: ${CID}"
 
-    COVER_URL=$(get_video_cover "${FID}" "${CID}")
-    if [ -z "${COVER_URL}" ]; then
-        echo "   ❌ 未获取到封面图 URL"
+    local img_paths_str
+    img_paths_str=$(process_video_to_images "${FID}" "${CID}" "single")
+    if [ -z "${img_paths_str}" ]; then
+        echo "   ❌ 视频处理失败，退出"
         exit 1
     fi
-    echo "   ✅ 封面图 URL: ${COVER_URL}"
+
+    # 将路径字符串转为数组
+    local img_paths_arr=()
+    while IFS= read -r line; do
+        [ -n "${line}" ] && img_paths_arr+=("${line}")
+    done <<< "${img_paths_str}"
+
+    echo ""
+    echo ">> [2/3] 图片准备完成: ${#img_paths_arr[@]} 张"
+    for p in "${img_paths_arr[@]}"; do
+        echo "   - ${p}"
+    done
     echo ""
 
-    local cover_path="${TMP_DIR}/video_cover.jpg"
-    local compressed_path="${TMP_DIR}/video_cover_compressed.jpg"
-
-    echo ">> [2/3] 下载封面图..."
-    if ! download_cover "${COVER_URL}" "${cover_path}"; then
-        echo "   ❌ 封面图下载失败，退出"
-        exit 1
-    fi
-    local file_size
-    file_size=$(stat -c %s "${cover_path}" 2>/dev/null || echo 0)
-    echo "   ✅ 下载成功 ${file_size} bytes"
-
-    compress_image_if_needed "${cover_path}" "${compressed_path}"
-    echo ""
-
-    echo ">> [3/3] 视频博文分类（封面图 + 真实文字）..."
+    echo ">> [3/3] 视频博文分类..."
     echo "   博文文字: ${TEXT}"
-    local prompt="请对以下汽车行业视频博文进行营销分层分类。\\n\\n博文文字内容：\\n${TEXT}\\n\\n视频封面图已附上，请结合文字和画面综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
+    local prompt="请对以下汽车行业视频博文进行营销分层分类。\\n\\n博文文字内容：\\n${TEXT}\\n\\n视频画面已附上（${VIDEO_MODE}模式），请结合文字和画面综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
+
     local classify_result
-    classify_result=$(call_qwen_image "single_${FID}" "${compressed_path}" "${prompt}")
+    classify_result=$(call_qwen_multimodal "single_${FID}" "${prompt}" "${img_paths_arr[@]}")
 
     if [ -z "${classify_result}" ]; then
         echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
@@ -442,8 +636,9 @@ run_single() {
     echo ""
     echo "============================================"
     echo "  ✅ 单条测试完成"
-    echo "  总耗时: $((END_TS - START_TS))s"
-    echo "  时间:   $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  视频模式: ${VIDEO_MODE}"
+    echo "  总耗时:   $((END_TS - START_TS))s"
+    echo "  时间:     $(date '+%Y-%m-%d %H:%M:%S')"
     echo "============================================"
 }
 
@@ -469,6 +664,7 @@ run_batch() {
     echo "  输入:       ${input_file}"
     echo "  输出目录:   ${OUTPUT_DIR}"
     echo "  模型:       ${MODEL}"
+    echo "  视频模式:   ${VIDEO_MODE}"
     echo "============================================"
     echo ""
 
@@ -506,7 +702,7 @@ run_batch() {
     # ── 准备输出文件 ──────────────────────────────────────────
     local run_ts
     run_ts=$(date '+%Y%m%d_%H%M%S')
-    OUTPUT="${OUTPUT:-${OUTPUT_DIR}/video_batch_${run_ts}.tsv}"
+    OUTPUT="${OUTPUT:-${OUTPUT_DIR}/video_batch_${VIDEO_MODE}_${run_ts}.tsv}"
     local output_json="${OUTPUT%.tsv}.json"
     local output_summary="${OUTPUT%.tsv}_summary.txt"
     PERSIST_DEBUG_DIR="${OUTPUT_DIR}/debug_${run_ts}"
@@ -524,7 +720,7 @@ run_batch() {
     echo "   摘要文件: ${output_summary}"
     echo ""
 
-    printf "mid\tuid\tcontent_preview\tfid\tlayer\traw_output\tsuccess\terror\n" > "${OUTPUT}"
+    printf "mid\tuid\tcontent_preview\tfid\tvideo_mode\tlayer\traw_output\tsuccess\terror\n" > "${OUTPUT}"
 
     # ── 逐条处理 ──────────────────────────────────────────
     local lineno=0
@@ -539,9 +735,7 @@ run_batch() {
         lineno=$((lineno + 1))
 
         [ -z "${mid}" ] && continue
-        if [ "${mid}" = "mid" ]; then
-            continue
-        fi
+        [ "${mid}" = "mid" ] && continue
 
         processed=$((processed + 1))
         if [ "${LIMIT}" -gt 0 ] && [ "${processed}" -gt "${LIMIT}" ]; then
@@ -550,70 +744,54 @@ run_batch() {
 
         echo "[${processed}] mid=${mid} uid=${uid} dt=${dt}"
 
-        # 提取 fid 和 cover
-        local video_info
-        video_info=$(extract_video_info "${customer_info}")
-        local vfid vcover
-        vfid=$(echo "${video_info}" | awk -F'\t' '{print $1}')
-        vcover=$(echo "${video_info}" | awk -F'\t' '{print $2}')
+        # 提取 fid（从 customer_info JSON）
+        local video_info_json
+        video_info_json=$(extract_video_info_from_json "${customer_info}")
+        local vfid
+        vfid=$(echo "${video_info_json}" | awk -F'\t' '{print $1}')
 
         if [ -z "${vfid}" ]; then
             echo "   ❌ 未解析到 fid"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "" "" "" "false" "未解析到fid" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "" "${VIDEO_MODE}" "" "" "false" "未解析到fid" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             continue
         fi
 
         echo "   → fid=${vfid}"
 
-        # 如果没有 cover，尝试 showBatch API 获取
-        if [ -z "${vcover}" ]; then
-            echo "   → customer_info 中无 cover，调用 showBatch API..."
-            vcover=$(get_video_cover "${vfid}" "${uid}")
-        fi
-
-        if [ -z "${vcover}" ]; then
-            echo "   ❌ 未获取到封面图 URL"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "未获取到封面图URL" >> "${OUTPUT}"
+        # 获取图片（封面图或抽帧）
+        local img_paths_str
+        img_paths_str=$(process_video_to_images "${vfid}" "${uid}" "${mid}")
+        if [ -z "${img_paths_str}" ]; then
+            echo "   ❌ 视频处理失败"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${VIDEO_MODE}" "" "" "false" "视频处理失败" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
             continue
         fi
 
-        local cover_path="${TMP_DIR}/${mid}_${vfid//:/_}_cover.jpg"
-        local compressed_path="${TMP_DIR}/${mid}_${vfid//:/_}_cover_compressed.jpg"
+        local img_paths_arr=()
+        while IFS= read -r line; do
+            [ -n "${line}" ] && img_paths_arr+=("${line}")
+        done <<< "${img_paths_str}"
 
-        echo "   → 下载封面图..."
-        local dl_error
-        dl_error=$(download_cover "${vcover}" "${cover_path}" 2>&1)
-        local dl_status=$?
-        if [ "${dl_status}" -ne 0 ]; then
-            echo "   ❌ ${dl_error}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "${dl_error}" >> "${OUTPUT}"
-            fail_count=$((fail_count + 1))
-            rm -f "${cover_path}"
-            continue
-        fi
+        echo "   → 调用模型分类（${#img_paths_arr[@]}张图片）..."
+        local prompt="请对以下汽车行业视频博文进行营销分层分类。\\n\\n博文文字内容：\\n${content}\\n\\n视频画面已附上（${VIDEO_MODE}模式），请结合文字和画面综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
 
-        local file_size
-        file_size=$(stat -c %s "${cover_path}" 2>/dev/null || echo 0)
-        echo "   ✅ 封面图下载成功 ${file_size} bytes"
-
-        compress_image_if_needed "${cover_path}" "${compressed_path}"
-
-        echo "   → 调用模型分类..."
-        local prompt="请对以下汽车行业视频博文进行营销分层分类。\\n\\n博文文字内容：\\n${content}\\n\\n视频封面图已附上，请结合文字和画面综合判断。\\n\\n请分析后，最后一行输出：最终分类结果：【层级名称】"
         local classify_result
-        classify_result=$(call_qwen_image "${mid}" "${compressed_path}" "${prompt}")
+        classify_result=$(call_qwen_multimodal "${mid}" "${prompt}" "${img_paths_arr[@]}")
+
+        # 清理临时图片
+        for p in "${img_paths_arr[@]}"; do
+            rm -f "${p}"
+        done
 
         if [ -z "${classify_result}" ]; then
             echo "   ❌ 模型调用失败: ${CALL_QWEN_IMAGE_RESULT}"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${VIDEO_MODE}" "" "" "false" "${CALL_QWEN_IMAGE_RESULT}" >> "${OUTPUT}"
             fail_count=$((fail_count + 1))
-            rm -f "${cover_path}" "${compressed_path}"
             continue
         fi
 
@@ -625,8 +803,9 @@ run_batch() {
         else
             echo "   ✅ 分类结果: ${layer}"
         fi
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${layer}" "${classify_result}" "true" "" >> "${OUTPUT}"
+
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${VIDEO_MODE}" "${layer}" "${classify_result}" "true" "" >> "${OUTPUT}"
         success_count=$((success_count + 1))
 
         if [ "${first_json}" -eq 1 ]; then
@@ -634,10 +813,9 @@ run_batch() {
         else
             echo "," >> "${output_json}"
         fi
-        printf '{"mid":"%s","uid":"%s","content_preview":"%s","fid":"%s","layer":"%s","success":true,"raw_output":"%s"}' \
-            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${layer}" "${classify_result}" >> "${output_json}"
+        printf '{"mid":"%s","uid":"%s","content_preview":"%s","fid":"%s","video_mode":"%s","layer":"%s","success":true}' \
+            "${mid}" "${uid}" "${content:0:50}" "${vfid}" "${VIDEO_MODE}" "${layer}" >> "${output_json}"
 
-        rm -f "${cover_path}" "${compressed_path}"
     done < "${local_input}"
 
     echo "]" >> "${output_json}"
@@ -651,6 +829,7 @@ run_batch() {
         echo "  视频批量测试摘要"
         echo "============================================"
         echo "输入路径:     ${INPUT}"
+        echo "视频模式:     ${VIDEO_MODE}"
         echo "结果文件:     ${OUTPUT}"
         echo "JSON文件:     ${output_json}"
         echo "开始时间:     $(date -d "@${START_TS}" '+%Y-%m-%d %H:%M:%S')"

@@ -227,32 +227,45 @@ class BlogClassifier:
         )
 
     def _classify_video(self, item: BlogItem) -> ClassifyResult:
-        """视频博文分类（预留接口）"""
+        """
+        视频博文分类
+
+        支持两种模式（由 config.media.video.video_mode 控制）：
+          - cover：使用封面图进行多模态分类（快速，无需下载视频）
+          - frame：下载视频并用 OpenCV 抽帧进行多模态分类
+
+        若视频处理未启用或图片获取失败，退化为纯文本分类。
+        """
         if not self.video_handler.enabled:
             self.logger.info(f"视频处理未启用 mid={item.mid}，退化为纯文本分类")
             result = self._classify_text(item)
             result.media_type = "video_fallback_text"
             return result
 
-        # TODO: 视频处理完整流程
-        frame_paths = []
-        for media_id in (item.media_ids or []):
-            frames = self.video_handler.process_video(media_id)
-            frame_paths.extend(frames)
+        video_mode = self.video_handler.video_mode
+        self.logger.info(f"视频处理模式: {video_mode}, mid={item.mid}")
 
-        if not frame_paths:
-            self.logger.warning(f"视频抽帧失败 mid={item.mid}，退化为纯文本分类")
+        image_paths = []
+        for media_id in (item.media_ids or []):
+            paths = self.video_handler.process_video(media_id)
+            image_paths.extend(paths)
+
+        if not image_paths:
+            self.logger.warning(
+                f"视频图片获取失败(mode={video_mode}) mid={item.mid}，退化为纯文本分类"
+            )
             result = self._classify_text(item)
             result.media_type = "video_fallback_text"
             return result
 
+        # 多模态分类（封面图或抽帧图片，接口相同）
         user_prompt = self.prompts["user_video_template"].format(content=item.content)
         model_output = self.api_client.classify_with_video_frames(
-            self.system_prompt, user_prompt, frame_paths
+            self.system_prompt, user_prompt, image_paths
         )
 
-        # 清理临时帧
-        self._cleanup_files(frame_paths)
+        # 清理临时图片
+        self._cleanup_files(image_paths)
 
         if model_output is None:
             return ClassifyResult(
@@ -269,8 +282,9 @@ class BlogClassifier:
                 model_output=model_output
             )
 
+        actual_media_type = f"video_{video_mode}"
         return ClassifyResult(
-            mid=item.mid, uid=item.uid, layer=label, media_type=MediaType.VIDEO,
+            mid=item.mid, uid=item.uid, layer=label, media_type=actual_media_type,
             success=True, model_output=model_output
         )
 
