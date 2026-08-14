@@ -470,3 +470,4 @@ class VideoHandler:
             return self.process_video_frames(media_id, customer_id)
         else:
             # 默认 cover 模式
+            return self.process_video_cover(media_id, customer_id)
