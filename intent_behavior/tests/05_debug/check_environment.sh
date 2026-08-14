@@ -70,7 +70,7 @@ echo ""
 
 # ── 2. 输出目录写权限检查 ──────────────────────────────────
 echo ">> 输出目录写权限检查"
-for dir in "${PWD}/intent_behavior/output" "/tmp/image_test_output" "/tmp/video_test_output"; do
+for dir in "${PWD}/intent_behavior/output" "/tmp/xuanyu11/image_test_output" "/tmp/xuanyu11/video_test_output"; do
     mkdir -p "${dir}" 2>/dev/null
     if [ -w "${dir}" ]; then
         report "PASS" "目录可写: ${dir}"
@@ -133,7 +133,7 @@ echo ""
 # ── 6. 单条图片分类端到端测试 ──────────────────────────────
 if [ "${RUN_IMAGE_TEST}" -eq 1 ]; then
     echo ">> 单条图片分类端到端测试"
-    TMP_IMG_DIR="/tmp/env_test_$$"
+    TMP_IMG_DIR="/tmp/xuanyu11/env_test_$$"
     mkdir -p "${TMP_IMG_DIR}"
 
     IMG_URL="https://wx2.sinaimg.cn/mw690/${TEST_PID}.jpg"

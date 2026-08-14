@@ -187,7 +187,7 @@ class BlogClassifier:
             return result
 
         # 下载图片
-        tmp_dir = f"/tmp/blog_images_{item.mid}"
+        tmp_dir = f"/tmp/xuanyu11/blog_images_{item.mid}"
         image_paths = self.image_handler.download_images_by_pids(pids, tmp_dir)
 
         if not image_paths:
