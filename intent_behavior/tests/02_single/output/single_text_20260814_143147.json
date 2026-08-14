@@ -1,0 +1,23 @@
+{
+  "test_type": "single_text",
+  "run_time": "2026-08-14T14:31:47.696713",
+  "data_source": "命令行参数",
+  "config": {
+    "model": "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B",
+    "enable_thinking": false,
+    "temperature": 0.0
+  },
+  "result": {
+    "mid": "5315906418774795",
+    "uid": "1660019355",
+    "content_preview": "#倍驭新境# #竞于赛道#\\n#2026F1英国大奖赛# 即将在赛车运动的“摇篮”——银石赛道展开。",
+    "expected_layer": "未知",
+    "actual_layer": "认知层",
+    "is_correct": null,
+    "success": true,
+    "error": "",
+    "elapsed_ms": 205.8,
+    "media_type": "text",
+    "note": "用户自定义输入"
+  }
+}

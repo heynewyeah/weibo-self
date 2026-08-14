@@ -1,0 +1,27 @@
+{
+  "test_type": "single_image",
+  "run_time": "2026-08-14T14:47:00.425377",
+  "data_source": "命令行参数",
+  "config": {
+    "model": "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B",
+    "enable_thinking": false,
+    "temperature": 0.0,
+    "image_url_pattern": "https://wx2.sinaimg.cn/mw690/{pid}.jpg"
+  },
+  "result": {
+    "mid": "5306085276912145",
+    "uid": "7962560558",
+    "content_preview": "教授去看了零跑 A10 403km 悦享版，空间体验上非常大，超出了这级别应有的空间，因此大受好评。作为一台7万级的车子，空间配置上，它有什么吸引力呢？ #零跑A10##零跑汽车# http://t.",
+    "pids": [
+      "006WSrTUgy1i1zm8tqq1uj33342244qw"
+    ],
+    "expected_layer": "未知",
+    "actual_layer": "兴趣层",
+    "is_correct": null,
+    "success": true,
+    "error": "",
+    "elapsed_ms": 446.1,
+    "media_type": "image",
+    "note": "用户自定义输入"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "test_type": "single_image",
+  "run_time": "2026-08-12T16:31:33.963383",
+  "data_source": "内置 fallback 样本",
+  "config": {
+    "model": "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B",
+    "enable_thinking": false,
+    "temperature": 0.0,
+    "image_url_pattern": "https://wx2.sinaimg.cn/mw690/{pid}.jpg"
+  },
+  "result": {
+    "mid": "5250292767523625",
+    "uid": "1647951825",
+    "content_preview": "比亚迪宋L实拍来了！外观绝了，这个颜色真的太好看了，内饰也很精致，大家觉得怎么样？",
+    "pids": [
+      "6239bfd1ly1glk3gl3bqfj20gg08843c",
+      "6239bfd1ly1glk3jvoyqkj20gg08878t"
+    ],
+    "expected_layer": "兴趣层",
+    "actual_layer": "兴趣层",
+    "is_correct": true,
+    "success": true,
+    "error": "",
+    "elapsed_ms": 1675.3,
+    "media_type": "image",
+    "note": "图文实拍种草，引发兴趣，典型兴趣层",
+    "model_output": "最终分类结果：【兴趣层】"
+  }
+}

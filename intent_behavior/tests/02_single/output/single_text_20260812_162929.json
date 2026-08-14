@@ -1,0 +1,23 @@
+{
+  "test_type": "single_text",
+  "run_time": "2026-08-12T16:29:30.051117",
+  "data_source": "内置 fallback 样本",
+  "config": {
+    "model": "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B",
+    "enable_thinking": false,
+    "temperature": 0.0
+  },
+  "result": {
+    "mid": "5250218712893321",
+    "uid": "1647951825",
+    "content_preview": "#14万级全新威兰达到店# 14万级家用SUV，全新威兰达实测续航1500公里，第五代智能电混双擎加持，WLTC综合油耗低至4.59L/100km，通勤一月一加油、自驾跨省不补能。TSS 4.0智驾+",
+    "expected_layer": "考虑层",
+    "actual_layer": "兴趣层",
+    "is_correct": false,
+    "success": true,
+    "error": "",
+    "elapsed_ms": 204.9,
+    "media_type": "text",
+    "note": "含价格/参数/到店信息，典型考虑层"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "test_type": "single_video",
+  "run_time": "2026-08-12T16:32:30.808879",
+  "data_source": "内置 fallback 样本",
+  "config": {
+    "model": "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B",
+    "enable_thinking": false,
+    "temperature": 0.0,
+    "video_enabled": false
+  },
+  "result": {
+    "mid": "5250301234567890",
+    "uid": "1647951825",
+    "content_preview": "吉利银河M9极寒测试，零下40度挑战！看看新能源旗舰SUV在极端低温下的真实表现",
+    "fid": "2362904:4666847103221848",
+    "cover_url": "http://wx3.sinaimg.cn/orj480/006mX07Rly8ig0vpy0ph2j30t808241m.jpg",
+    "expected_layer": "兴趣层",
+    "actual_layer": "兴趣层",
+    "is_correct": true,
+    "success": true,
+    "error": "",
+    "elapsed_ms": 784.9,
+    "media_type": "cover_image",
+    "video_enabled": false,
+    "note": "产品测试视频，引发兴趣，典型兴趣层"
+  }
+}
