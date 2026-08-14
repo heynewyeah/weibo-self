@@ -122,7 +122,7 @@ class ImageHandler:
         return False
 
     def download_images_by_pids(self, pids: List[str],
-                                tmp_dir: str = "/tmp/blog_images") -> List[str]:
+                                tmp_dir: str = "/tmp/xuanyu11/blog_images") -> List[str]:
         """
         批量下载图片
 
@@ -301,7 +301,7 @@ class VideoHandler:
         return False
 
     def extract_frames(self, video_path: str, num_frames: int = None,
-                       output_dir: str = "/tmp/video_frames") -> List[str]:
+                       output_dir: str = "/tmp/xuanyu11/video_frames") -> List[str]:
         """
         使用 OpenCV 从视频中均匀抽取关键帧
 
@@ -382,7 +382,7 @@ class VideoHandler:
         return frame_paths
 
     def process_video_cover(self, media_id: str, customer_id: str = None,
-                            tmp_dir: str = "/tmp/video_covers") -> List[str]:
+                            tmp_dir: str = "/tmp/xuanyu11/video_covers") -> List[str]:
         """
         方案A（cover）：获取封面图 → 下载 → 返回封面图路径列表
 
@@ -407,7 +407,7 @@ class VideoHandler:
         return []
 
     def process_video_frames(self, media_id: str, customer_id: str = None,
-                             tmp_dir: str = "/tmp/video_frames") -> List[str]:
+                             tmp_dir: str = "/tmp/xuanyu11/video_frames") -> List[str]:
         """
         方案B（frame）：获取视频URL → 下载视频 → OpenCV抽帧 → 返回帧路径列表
 
@@ -470,4 +470,3 @@ class VideoHandler:
             return self.process_video_frames(media_id, customer_id)
         else:
             # 默认 cover 模式
-            return self.process_video_cover(media_id, customer_id)
