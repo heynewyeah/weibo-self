@@ -257,7 +257,7 @@ def classify_with_frames(fid: str, customer_id: str, content: str, mid: str,
 
     handler = VideoHandler(video_config, logger)
 
-    tmp_dir = os.path.join(tempfile.gettempdir(), f"video_frames_{mid}")
+    tmp_dir = os.path.join("/tmp/xuanyu11", f"video_frames_{mid}")
     frame_paths = handler.process_video_frames(fid, customer_id, tmp_dir)
 
     if not frame_paths:
