@@ -148,6 +148,10 @@ extractor:
   hdfs:
     # HDFS 文件路径（支持目录，自动探测 part-* 文件）
     file_path: "/dw_ext/ad/person/xuanyu11/intent_behavior/data/car_weibo_ad_20260701_20260731"
+    # 权限解决方案：若当前用户无 HDFS 访问权限，可指定有权限的用户（如 adsfst）
+    # 脚本会自动通过 sudo -u {run_as_user} 执行 hdfs 命令
+    # 留空则表示使用当前用户直接执行 hdfs 命令
+    run_as_user: "ads_fst"
     has_header: false
     field_mapping:
       mid: 0

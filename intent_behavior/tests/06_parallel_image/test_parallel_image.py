@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-并行批量文本分类测试
+并行批量图文分类测试
 ====================
-功能：从 HDFS/本地批量读取纯文本博文，使用 ThreadPoolExecutor 并发调用
-      Qwen 模型进行文本分类，验证并发稳定性和吞吐性能。
+功能：从 HDFS/本地批量读取图文博文，使用 ThreadPoolExecutor 并发调用
+      Qwen 模型进行图文多模态分类，验证并发稳定性和吞吐性能。
 
 核心特点：
   - 并发请求：默认 10 并发（与平台推荐一致）
@@ -14,37 +14,33 @@
 数据来源（按优先级）：
   1. --input-hdfs 指定的 HDFS 目录/文件
   2. --input 指定的本地 JSONL/TSV 文件
-  3. tests/01_prepare_data/fixtures/text_samples.jsonl
+  3. tests/01_prepare_data/fixtures/image_samples.jsonl
   4. 内置 fallback 样本
 
+HDFS 字段说明（query_image.sh 导出格式）：
+  mid \t uid \t content \t media_id \t customer_info(pid列表) \t dt
+  其中 customer_info 为 JSON 数组字符串，如 ["pid1","pid2"]
+
 输出路径（默认 /tmp，避免代码目录权限问题）：
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>.json    — 完整结果
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>.tsv     — TSV 汇总
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>_summary.txt — 摘要
+  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>.json
+  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>.tsv
+  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>_summary.txt
 
 运行方式：
-  # 从 HDFS 读取文本博文并并发分类（xuanyu11 用户下用 sudo 借 adsfst 权限）
-  python3 tests/06_parallel_text/test_parallel_text.py \
-      --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
+  # 从 HDFS 读取图文博文并并发分类（xuanyu11 用户下用 sudo 借 adsfst 权限）
+  python3 tests/06_parallel_image/test_parallel_image.py \
+      --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701 \
       --hdfs-user adsfst \
       --workers 10 --limit 100
 
   # 已用 adsfst 导出到本地文件后再分类（无需 sudo）
-  python3 tests/06_parallel_text/test_parallel_text.py \
-      --input /tmp/xuanyu11_intent_behavior_data/text_samples.tsv \
-      --workers 10 --limit 100
-
-  # 本地 JSONL 测试
-  python3 tests/06_parallel_text/test_parallel_text.py \
-      --input tests/01_prepare_data/fixtures/text_samples.jsonl \
+  python3 tests/06_parallel_image/test_parallel_image.py \
+      --input tests/01_prepare_data/fixtures/image_samples.jsonl \
       --workers 10 --limit 50
 
-  # 显示模型原始输出
-  python3 tests/06_parallel_text/test_parallel_text.py --verbose
-
 运行时间预估：
-  - 100 条纯文本、10 并发：约 20~60 秒（取决于模型响应速度）
-  - 相比串行（sleep 0.3s）可节约 60%~80% 时间
+  - 100 条图文、10 并发：约 60~180 秒（取决于图片下载和模型响应速度）
+  - 相比串行可节约 50%~70% 时间
 
 作者：xuanyu11
 创建时间：2026-08-17
@@ -65,7 +61,7 @@ from typing import List, Dict, Optional, Tuple
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/fixtures")
-DEFAULT_OUTPUT_DIR = "/tmp/xuanyu11/intent_behavior_output"
+DEFAULT_OUTPUT_DIR = "/tmp/xuanyu11_intent_behavior_output"
 
 sys.path.insert(0, PROJECT_DIR)
 
@@ -77,21 +73,27 @@ from src.utils import setup_logger
 # ── 内置 fallback 样本 ────────────────────────────────────────
 FALLBACK_SAMPLES = [
     {
-        "mid": "5250218712893321",
+        "mid": "5250292767523625",
         "uid": "1647951825",
-        "content": "#14万级全新威兰达到店# 14万级家用SUV，全新威兰达实测续航1500公里，第五代智能电混双擎加持，WLTC综合油耗低至4.59L/100km，通勤一月一加油、自驾跨省不补能。TSS 4.0智驾+15.6英寸大屏，新车已经到店了，家用还是挺好的",
-        "expected_layer": "考虑层",
-    },
-    {
-        "mid": "5250218712893322",
-        "uid": "1647951826",
-        "content": "今天带大家体验东风日产N6的零压云毯大沙发，坐进去整个人都放松了，这个座椅真的绝了！内饰质感也很在线，感兴趣的朋友可以去店里体验一下",
+        "content": "比亚迪宋L实拍来了！外观绝了，这个颜色真的太好看了，内饰也很精致，大家觉得怎么样？",
+        "media_type": "image",
+        "media_info": [{"media_type": "1", "customer_info": '["6239bfd1ly1glk3gl3bqfj20gg08843c"]'}],
         "expected_layer": "兴趣层",
     },
     {
-        "mid": "5250218712893323",
+        "mid": "5250292767523626",
+        "uid": "1647951826",
+        "content": "威兰达3天免费用车券限时抽取！参与话题活动#威兰达1212宠粉计划#，转发本微博即可参与抽奖，中奖率超高！",
+        "media_type": "image",
+        "media_info": [{"media_type": "1", "customer_info": '["6239bfd1ly1glk49t82q0j20gg0880x6"]'}],
+        "expected_layer": "考虑层",
+    },
+    {
+        "mid": "5250292767523627",
         "uid": "1647951827",
-        "content": "比亚迪全新品牌形象发布！「在路上」——这不只是一句口号，更是比亚迪对每一位用户的承诺。新的征程，新的出发。#比亚迪# #新能源汽车#",
+        "content": "理想L9官方宣传大片，六座旗舰SUV，家的感觉",
+        "media_type": "image",
+        "media_info": [{"media_type": "1", "customer_info": '["62e00111ly1fvco1lvodmj20gg088gol"]'}],
         "expected_layer": "认知层",
     },
 ]
@@ -127,11 +129,25 @@ def load_tsv(filepath: str) -> List[Dict]:
         if not line:
             continue
         parts = line.split("\t")
-        items.append({
+        item = {
             "mid": parts[0] if len(parts) > 0 else "",
             "uid": parts[1] if len(parts) > 1 else "",
             "content": parts[2] if len(parts) > 2 else "",
-        })
+            "media_type": "image",
+            "media_info": [],
+        }
+        # HDFS 图片格式：第5列 customer_info 为 pid JSON 数组
+        if len(parts) > 4 and parts[4]:
+            try:
+                pids = json.loads(parts[4])
+                if isinstance(pids, list):
+                    item["media_info"] = [{"media_type": "1", "customer_info": json.dumps(pids)}]
+            except json.JSONDecodeError:
+                # 兼容逗号分隔的 pid 列表
+                pids = [p.strip() for p in parts[4].split(",") if p.strip()]
+                if pids:
+                    item["media_info"] = [{"media_type": "1", "customer_info": json.dumps(pids)}]
+        items.append(item)
     return items
 
 
@@ -148,26 +164,32 @@ def load_hdfs_data(hdfs_path: str, hdfs_user: str,
     """通过 HDFSExtractor 读取 HDFS 上的 TSV 数据，并转换为 Dict 列表"""
     from src.data_extractor import HDFSExtractor
 
-    # 构造临时 extractor 配置
     extractor_cfg = {
         "hdfs": {
             "file_path": hdfs_path,
             "run_as_user": hdfs_user,
             "has_header": False,
-            "field_mapping": {"mid": 0, "content": 1, "dt": 2},
+            "field_mapping": {
+                "mid": 0,
+                "uid": 1,
+                "content": 2,
+                "pic_ids": 4,
+                "dt": 5,
+            },
         }
     }
 
     extractor = HDFSExtractor(extractor_cfg, logger)
     blog_items = extractor.extract()
 
-    # 转为 Dict 列表，保持与本地数据一致
     items = []
     for bi in blog_items:
         items.append({
             "mid": bi.mid,
             "uid": bi.uid,
             "content": bi.content or "",
+            "media_type": "image",
+            "media_info": [{"media_type": "1", "customer_info": json.dumps(bi.pic_ids)}] if bi.pic_ids else [],
             "dt": bi.dt,
         })
     return items, hdfs_path
@@ -176,12 +198,12 @@ def load_hdfs_data(hdfs_path: str, hdfs_user: str,
 def load_data(args, logger: logging.Logger) -> Tuple[List[Dict], str]:
     """按优先级加载测试数据"""
     # 1. HDFS
-    # 1. HDFS
     if args.input_hdfs:
         run_as_info = f" (sudo as {args.hdfs_user})" if args.hdfs_user else ""
         logger.info(f"从 HDFS 加载数据{run_as_info}: {args.input_hdfs}")
         items, source = load_hdfs_data(args.input_hdfs, args.hdfs_user, logger)
         return items, source
+
     # 2. 本地文件
     if args.input:
         if not os.path.exists(args.input):
@@ -192,7 +214,7 @@ def load_data(args, logger: logging.Logger) -> Tuple[List[Dict], str]:
         return items, source
 
     # 3. fixtures
-    fixtures_path = os.path.join(FIXTURES_DIR, "text_samples.jsonl")
+    fixtures_path = os.path.join(FIXTURES_DIR, "image_samples.jsonl")
     if os.path.exists(fixtures_path):
         logger.info(f"从 fixtures 加载数据: {fixtures_path}")
         return load_jsonl(fixtures_path), fixtures_path
@@ -202,6 +224,36 @@ def load_data(args, logger: logging.Logger) -> Tuple[List[Dict], str]:
     return FALLBACK_SAMPLES, "内置 fallback 样本"
 
 
+# ── 数据转换 ──────────────────────────────────────────────────
+def raw_to_blog_item(raw: Dict) -> BlogItem:
+    """将原始数据项（JSONL/TSV）转换为 BlogItem，解析图片 pid"""
+    mid = str(raw.get("mid", ""))
+    uid = str(raw.get("uid", ""))
+    content = raw.get("content", "") or ""
+    media_info = raw.get("media_info") or []
+
+    pic_ids = []
+    if isinstance(media_info, list):
+        for m in media_info:
+            mt = str(m.get("media_type", ""))
+            if mt == "1":
+                try:
+                    pid_list = json.loads(m.get("customer_info", "[]"))
+                    if isinstance(pid_list, list):
+                        pic_ids.extend(pid_list)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+    return BlogItem(
+        mid=mid,
+        uid=uid,
+        content=content,
+        pic_ids=pic_ids,
+        media_ids=[],
+        dt=raw.get("dt", ""),
+    )
+
+
 # ── 分类任务 ──────────────────────────────────────────────────
 def classify_one(
     item: Dict,
@@ -209,20 +261,21 @@ def classify_one(
     verbose: bool,
 ) -> Dict:
     """
-    对单条文本博文执行分类（线程安全）。
+    对单条图文博文执行分类（线程安全）。
 
-    直接调用 BlogClassifier._classify_text，避免 _persist_result 的文件写入竞争。
+    直接调用 BlogClassifier._classify_image，避免 _persist_result 的文件写入竞争。
+    每个 item 使用独立的临时目录（基于 mid），多线程下载图片互不冲突。
     """
     mid = str(item.get("mid", ""))
     uid = str(item.get("uid", ""))
     content = item.get("content", "") or ""
     expected = item.get("expected_layer", "未知")
 
-    blog_item = BlogItem(mid=mid, uid=uid, content=content)
+    blog_item = raw_to_blog_item(item)
 
     t0 = time.perf_counter()
     try:
-        result = classifier._classify_text(blog_item)
+        result = classifier._classify_image(blog_item)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         is_correct = (result.layer == expected) if expected != "未知" else None
@@ -232,6 +285,7 @@ def classify_one(
             "mid": mid,
             "uid": uid,
             "content_preview": content[:80],
+            "pic_count": len(blog_item.pic_ids),
             "expected_layer": expected,
             "actual_layer": result.layer,
             "is_correct": is_correct,
@@ -243,6 +297,7 @@ def classify_one(
         if verbose:
             record["model_output"] = result.model_output
             record["content"] = content
+            record["pic_ids"] = blog_item.pic_ids
 
         return record
 
@@ -253,13 +308,14 @@ def classify_one(
             "mid": mid,
             "uid": uid,
             "content_preview": content[:80],
+            "pic_count": len(blog_item.pic_ids),
             "expected_layer": expected,
             "actual_layer": "未识别",
             "is_correct": False if expected != "未知" else None,
             "success": False,
             "error": f"异常: {str(e)}",
             "elapsed_ms": round(elapsed_ms, 1),
-            "media_type": "text",
+            "media_type": "image",
         }
 
 
@@ -301,8 +357,11 @@ def print_summary(
     layer_dist: Dict[str, int] = {}
     correct_count = 0
     has_expected = 0
+    pic_count_dist: Dict[int, int] = {}
     for r in results:
         layer_dist[r["actual_layer"]] = layer_dist.get(r["actual_layer"], 0) + 1
+        pc = r.get("pic_count", 0)
+        pic_count_dist[pc] = pic_count_dist.get(pc, 0) + 1
         if r["expected_layer"] != "未知":
             has_expected += 1
             if r["is_correct"]:
@@ -312,7 +371,7 @@ def print_summary(
 
     summary_lines = [
         "=" * 60,
-        "并行批量文本分类测试结果摘要",
+        "并行批量图文分类测试结果摘要",
         "=" * 60,
         f"运行时间:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"数据来源:     {data_source}",
@@ -327,8 +386,13 @@ def print_summary(
         f"P95 延迟:     {p95:.0f}ms",
         f"P99 延迟:     {p99:.0f}ms",
         "",
-        "分类结果分布:",
+        "图片数量分布:",
     ]
+    for pc, cnt in sorted(pic_count_dist.items()):
+        summary_lines.append(f"  {pc} 张图: {cnt} 条")
+
+    summary_lines.append("")
+    summary_lines.append("分类结果分布:")
     for layer, cnt in sorted(layer_dist.items(), key=lambda x: -x[1]):
         pct = cnt / total * 100
         summary_lines.append(f"  {layer}: {cnt} 条 ({pct:.1f}%)")
@@ -354,6 +418,7 @@ def print_summary(
         "p95_latency_ms": round(p95, 1),
         "p99_latency_ms": round(p99, 1),
         "layer_distribution": layer_dist,
+        "pic_count_distribution": pic_count_dist,
         "accuracy": round(accuracy / 100, 4) if accuracy is not None else None,
     }
 
@@ -361,7 +426,7 @@ def print_summary(
 # ── 主流程 ────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="并行批量文本分类测试",
+        description="并行批量图文分类测试",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -374,7 +439,7 @@ def main():
     parser.add_argument("--workers", type=int, default=10,
                         help="并发数（默认 10，平台推荐 8~12）")
     parser.add_argument("--verbose", action="store_true",
-                        help="在结果中保存模型原始输出与完整正文")
+                        help="在结果中保存模型原始输出与完整正文/pid")
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"),
                         help="配置文件路径")
     parser.add_argument("--timeout", type=int, default=0,
@@ -388,11 +453,11 @@ def main():
     # ── 初始化 ────────────────────────────────────────────────
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
-    logger = setup_logger("test_parallel_text", log_dir=os.path.join(PROJECT_DIR, "logs"))
+    logger = setup_logger("test_parallel_image", log_dir=os.path.join(PROJECT_DIR, "logs"))
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     logger.info("=" * 60)
-    logger.info("并行批量文本分类测试")
+    logger.info("并行批量图文分类测试")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"配置文件: {args.config}")
     logger.info(f"并发数: {args.workers}")
@@ -402,7 +467,6 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # 若命令行指定 timeout，覆盖配置
     if args.timeout > 0:
         config["api"]["timeout"] = args.timeout
 
@@ -415,7 +479,6 @@ def main():
     # ── 加载数据 ──────────────────────────────────────────────
     raw_items, data_source = load_data(args, logger)
 
-    # 补充 index 字段
     for i, item in enumerate(raw_items):
         item["index"] = i + 1
 
@@ -448,7 +511,6 @@ def main():
             results.append(record)
             completed += 1
 
-            # 每 10% 或每 10 条打印一次进度
             if completed % max(1, total // 10) == 0 or completed == total or completed % 10 == 0:
                 success_so_far = sum(1 for r in results if r["success"])
                 fail_so_far = completed - success_so_far
@@ -469,13 +531,12 @@ def main():
     )
 
     # ── 保存结果 ──────────────────────────────────────────────
-    output_json = os.path.join(output_dir, f"parallel_text_{run_ts}.json")
-    output_tsv = os.path.join(output_dir, f"parallel_text_{run_ts}.tsv")
-    output_summary = os.path.join(output_dir, f"parallel_text_{run_ts}_summary.txt")
+    output_json = os.path.join(output_dir, f"parallel_image_{run_ts}.json")
+    output_tsv = os.path.join(output_dir, f"parallel_image_{run_ts}.tsv")
+    output_summary = os.path.join(output_dir, f"parallel_image_{run_ts}_summary.txt")
 
-    # 1. JSON 完整结果
     output_data = {
-        "test_type": "parallel_text",
+        "test_type": "parallel_image",
         "run_time": datetime.now().isoformat(),
         "data_source": data_source,
         "config": {
@@ -491,16 +552,14 @@ def main():
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-    # 2. TSV 汇总
     with open(output_tsv, "w", encoding="utf-8") as f:
-        f.write("index\tmid\tuid\tactual_layer\tsuccess\terror\telapsed_ms\n")
+        f.write("index\tmid\tuid\tpic_count\tactual_layer\tsuccess\terror\telapsed_ms\n")
         for r in results:
             f.write(
-                f"{r['index']}\t{r['mid']}\t{r['uid']}\t{r['actual_layer']}\t"
-                f"{r['success']}\t{r['error'] or ''}\t{r['elapsed_ms']}\n"
+                f"{r['index']}\t{r['mid']}\t{r['uid']}\t{r['pic_count']}\t"
+                f"{r['actual_layer']}\t{r['success']}\t{r['error'] or ''}\t{r['elapsed_ms']}\n"
             )
 
-    # 3. 摘要文本
     with open(output_summary, "w", encoding="utf-8") as f:
         f.write("\n".join(summary_lines) + "\n")
 
@@ -511,7 +570,6 @@ def main():
     logger.info(f"  摘要:    {output_summary}")
     logger.info("=" * 60)
 
-    # 失败率超过 20% 时非零退出
     if summary_dict["success_rate"] < 0.8:
         logger.warning(f"成功率 {summary_dict['success_rate']*100:.1f}% 低于 80%，退出码 1")
         sys.exit(1)
