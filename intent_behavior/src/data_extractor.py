@@ -64,7 +64,15 @@ class BaseExtractor(ABC):
             pic_ids = []
             pic_col = field_mapping.get("pic_ids", -1)
             if pic_col >= 0 and pic_col < len(parts) and parts[pic_col]:
-                pic_ids = [p.strip() for p in parts[pic_col].split(",") if p.strip()]
+                raw = parts[pic_col].strip()
+                # HDFS 导出可能是 JSON 数组字符串，如 ["pid1","pid2"]
+                if raw.startswith("[") and raw.endswith("]"):
+                    try:
+                        pic_ids = [str(p).strip() for p in json.loads(raw) if p]
+                    except json.JSONDecodeError:
+                        pic_ids = [p.strip() for p in raw.split(",") if p.strip()]
+                else:
+                    pic_ids = [p.strip() for p in raw.split(",") if p.strip()]
             else:
                 # 从 content JSON 中解析 pid
                 pic_ids = ImageHandler._extract_pids_from_text(content)
@@ -73,7 +81,14 @@ class BaseExtractor(ABC):
             media_ids = []
             media_col = field_mapping.get("media_ids", -1)
             if media_col >= 0 and media_col < len(parts) and parts[media_col]:
-                media_ids = [m.strip() for m in parts[media_col].split(",") if m.strip()]
+                raw = parts[media_col].strip()
+                if raw.startswith("[") and raw.endswith("]"):
+                    try:
+                        media_ids = [str(m).strip() for m in json.loads(raw) if m]
+                    except json.JSONDecodeError:
+                        media_ids = [m.strip() for m in raw.split(",") if m.strip()]
+                else:
+                    media_ids = [m.strip() for m in raw.split(",") if m.strip()]
 
             items.append(BlogItem(
                 mid=mid,
