@@ -25,7 +25,7 @@
 运行方式：
   # 从 HDFS 读取文本博文并并发分类（推荐）
   python3 tests/06_parallel_text/test_parallel_text.py \
-      --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
+      --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701/000000_0 \
       --workers 10 --limit 100
 
   # 本地 JSONL 测试
