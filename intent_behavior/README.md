@@ -43,6 +43,9 @@ intent_behavior/
 │   ├── 06_parallel_image/        # 并行批量图文分类测试
 │   │   ├── test_parallel_image.py # 从 HDFS 批量读取图文并并发分类
 │   │   └── output/               # 测试结果输出（自动创建）
+│   ├── 06_parallel_video/        # 并行批量视频分类测试
+│   │   ├── test_parallel_video.py # 从 HDFS 批量读取视频并并发分类
+│   │   └── output/               # 测试结果输出（自动创建）
 │   └── run_all_tests.py          # 一键运行所有测试
 ├── docs/
 │   └── upstream_data_spec.md     # 上游数据输入规范（JSONL格式定义）
@@ -145,6 +148,25 @@ python3 tests/06_parallel_image/test_parallel_image.py \
 python3 tests/06_parallel_image/test_parallel_image.py \
   --input tests/01_prepare_data/fixtures/image_samples.jsonl \
   --workers 10 --limit 20
+```
+
+### 8. 并行批量视频测试（从 HDFS）
+
+```bash
+# 从 HDFS 读取 20 条视频博文，10 并发 cover 模式分类
+python3 tests/06_parallel_video/test_parallel_video.py \
+  --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701/000000_0 \
+  --workers 10 --limit 20
+
+# frame 模式（下载视频 + OpenCV 抽帧，并发数建议降低）
+python3 tests/06_parallel_video/test_parallel_video.py \
+  --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701/000000_0 \
+  --video-mode frame --workers 3 --limit 10
+
+# 本地 JSONL 测试
+python3 tests/06_parallel_video/test_parallel_video.py \
+  --input tests/01_prepare_data/fixtures/video_samples.jsonl \
+  --workers 10 --limit 10
 ```
 
 ---

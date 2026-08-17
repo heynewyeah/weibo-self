@@ -11,6 +11,7 @@
   Step 4: 一致性测试（04_consistency）—— 验证硬要求
   Step 5: 并行批量文本测试（06_parallel_text）—— 可选，验证并发稳定性
   Step 6: 并行批量图文测试（06_parallel_image）—— 可选，验证并发稳定性
+  Step 7: 并行批量视频测试（06_parallel_video）—— 可选，验证并发稳定性
 
 输出路径：
   tests/run_all_output/run_all_<timestamp>.json   — 汇总结果
@@ -38,6 +39,13 @@
 
   # 只运行并行图文测试
   python3 tests/run_all_tests.py --only parallel_image
+
+  # 只运行并行视频测试（默认 cover 模式，10 条）
+  python3 tests/run_all_tests.py --only parallel_video
+
+  # frame 模式（需 opencv-python-headless）
+  python3 tests/run_all_tests.py --only parallel_video \
+    --parallel-video-mode frame --parallel-video-workers 3 --parallel-video-limit 10
 
 运行时间预估：全部阶段约 5~15 分钟
 
@@ -123,7 +131,7 @@ def main():
     parser.add_argument("--skip-prepare", action="store_true",
                         help="跳过数据生成步骤（fixtures 已存在时使用）")
     parser.add_argument("--only", default="",
-                        help="只运行指定阶段，逗号分隔：prepare,single,batch,consistency,parallel,parallel_image")
+                        help="只运行指定阶段，逗号分隔：prepare,single,batch,consistency,parallel,parallel_image,parallel_video")
     parser.add_argument("--consistency-repeat", type=int, default=5,
                         help="一致性测试重复次数（默认5）")
     parser.add_argument("--batch-limit", type=int, default=0,
@@ -136,6 +144,12 @@ def main():
                         help="并行图文测试条数限制（默认10）")
     parser.add_argument("--parallel-image-workers", type=int, default=10,
                         help="并行图文测试并发数（默认10）")
+    parser.add_argument("--parallel-video-limit", type=int, default=10,
+                        help="并行视频测试条数限制（默认10）")
+    parser.add_argument("--parallel-video-workers", type=int, default=10,
+                        help="并行视频测试并发数（默认10）")
+    parser.add_argument("--parallel-video-mode", default="cover", choices=["cover", "frame"],
+                        help="并行视频测试处理模式：cover（封面图，默认）或 frame（OpenCV抽帧）")
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"),
                         help="配置文件路径")
     args = parser.parse_args()
@@ -214,6 +228,18 @@ def main():
             "--limit", str(args.parallel_image_limit),
         ]
         result = run_step("Step 6: 并行批量图文测试", parallel_image_cmd)
+        all_results.append(result)
+
+    # ── Step 7: 并行批量视频测试 ─────────────────────────────
+    if "parallel_video" in only_stages:
+        parallel_video_cmd = [
+            PYTHON, "tests/06_parallel_video/test_parallel_video.py",
+            "--config", args.config,
+            "--workers", str(args.parallel_video_workers),
+            "--limit", str(args.parallel_video_limit),
+            "--video-mode", args.parallel_video_mode,
+        ]
+        result = run_step("Step 7: 并行批量视频测试", parallel_video_cmd)
         all_results.append(result)
 
     # ── 汇总报告 ──────────────────────────────────────────────
