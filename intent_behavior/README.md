@@ -32,9 +32,15 @@ intent_behavior/
 │   ├── 03_batch/                 # 批量分类测试
 │   │   ├── test_batch.py         # 批量测试（含进度/统计/耗时）
 │   │   └── output/               # 测试结果输出（自动创建）
-│   └── 04_consistency/           # 一致性测试（硬要求验证）
-│       ├── test_consistency.py   # 同一条博文重复N次，验证结果一致
-│       └── output/               # 测试结果输出（自动创建）
+│   ├── 04_consistency/           # 一致性测试（硬要求验证）
+│   │   ├── test_consistency.py   # 同一条博文重复N次，验证结果一致
+│   │   └── output/               # 测试结果输出（自动创建）
+│   ├── 05_debug/                 # 调试与环境检查
+│   │   └── check_environment.sh  # 环境检查脚本
+│   ├── 06_parallel_text/         # 并行批量文本分类测试
+│   │   ├── test_parallel_text.py # 从 HDFS 批量读取文本并并发分类
+│   │   └── output/               # 测试结果输出（自动创建）
+│   └── run_all_tests.py          # 一键运行所有测试
 ├── docs/
 │   └── upstream_data_spec.md     # 上游数据输入规范（JSONL格式定义）
 ├── logs/                         # 日志目录（自动创建）
@@ -106,14 +112,28 @@ python3 tests/04_consistency/test_consistency.py
 # 重复10次，更严格验证
 python3 tests/04_consistency/test_consistency.py --repeat 10
 
+```bash
 # 只测试文本类型
 python3 tests/04_consistency/test_consistency.py --type text
+```
+
+### 6. 并行批量文本测试（从 HDFS）
+
+```bash
+# 从 HDFS 读取 100 条文本博文，10 并发分类
+python3 tests/06_parallel_text/test_parallel_text.py \
+  --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
+  --workers 10 --limit 100
+
+# 本地 JSONL 测试
+python3 tests/06_parallel_text/test_parallel_text.py \
+  --input tests/01_prepare_data/fixtures/text_samples.jsonl \
+  --workers 10 --limit 50
 ```
 
 ---
 
 ## main.py 使用方式
-
 ```bash
 # 单条文本分类
 python3 main.py --mode single \
