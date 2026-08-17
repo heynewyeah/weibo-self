@@ -3,18 +3,31 @@
 单条图文博文分类测试
 ====================
 功能：对单条图文博文（含图片 pid）调用分类接口，验证多模态分类链路。
-      链路：pid → URL → 下载图片 → base64 → Qwen3.6 多模态分类
+       链路：pid → URL → 下载图片 → base64 → Qwen3.6 多模态分类
 
-数据来源：
-  tests/01_prepare_data/fixtures/image_samples.jsonl
-  （若文件不存在，使用内置 fallback 样本）
+数据来源（按优先级）：
+  1. --input-hdfs 指定的 HDFS 图文文件（默认）
+  2. --mid / --content / --pids 命令行自定义输入
+  3. tests/01_prepare_data/fixtures/image_samples.jsonl
+  4. 内置 fallback 样本
+
+HDFS 图文字段说明：
+  mid \t uid \t content \t media_id \t customer_info(pid列表) \t dt
+  其中 customer_info 为 JSON 数组字符串，如 ["pid1","pid2"]
+
+默认 HDFS 路径：
+  /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701/000000_0
 
 输出路径：
   tests/02_single/output/single_image_<timestamp>.json
 
 运行方式：
-  # 使用默认样本（第一条）
+  # 使用默认 HDFS 文件的第一条样本
   python3 tests/02_single/test_single_image.py
+
+  # 指定 HDFS 文件
+  python3 tests/02_single/test_single_image.py \
+    --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701/000000_0
 
   # 指定样本索引
   python3 tests/02_single/test_single_image.py --index 1
@@ -29,6 +42,7 @@
 
 作者：xuanyu11
 创建时间：2026-08-12
+更新时间：2026-08-17（默认输入改为 HDFS）
 """
 
 import os
@@ -36,7 +50,9 @@ import sys
 import json
 import argparse
 import logging
+import subprocess
 from datetime import datetime
+from typing import List, Tuple
 
 # ── 路径设置 ──────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,10 +60,13 @@ PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/fixtures")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
+DEFAULT_HDFS_PATH = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701/000000_0"
+
 sys.path.insert(0, PROJECT_DIR)
 
 from src.classifier import BlogClassifier
 from src.utils import setup_logger
+
 
 # ── 内置 fallback 样本（已验证 pid 可下载）──────────────────
 FALLBACK_SAMPLES = [
@@ -96,6 +115,113 @@ FALLBACK_SAMPLES = [
 ]
 
 
+def read_hdfs_or_local_lines(path: str, logger: logging.Logger) -> List[str]:
+    """
+    读取本地文件或 HDFS 文件内容，返回非空行列表。
+    若本地路径存在则直接读取；否则尝试 `hdfs dfs -cat`。
+    """
+    if os.path.exists(path):
+        logger.info(f"[Local] 读取本地文件: {path}")
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return [ln.rstrip("\n") for ln in f if ln.strip()]
+
+    logger.info(f"[HDFS] 尝试读取 HDFS 文件: {path}")
+    try:
+        result = subprocess.run(
+            ["hdfs", "dfs", "-cat", path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning(f"[HDFS] 读取失败: {result.stderr[:300]}")
+            return []
+        return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.strip()]
+    except FileNotFoundError:
+        logger.warning("[HDFS] 未找到 hdfs 命令")
+        return []
+    except subprocess.TimeoutExpired:
+        logger.warning("[HDFS] 读取超时")
+        return []
+
+
+def parse_image_hdfs_lines(lines: List[str]) -> List[dict]:
+    """解析图文 HDFS 导出文件：mid\tuid\tcontent\tmedia_id\tcustomer_info(pid列表)\tdt"""
+    samples = []
+    for line in lines:
+        if line.strip().lower().startswith("mid"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        mid, uid, content = parts[0], parts[1], parts[2]
+        customer_info = parts[4] if len(parts) > 4 else "[]"
+        dt = parts[5] if len(parts) > 5 else ""
+
+        # 校验 customer_info 是否为合法 JSON 数组
+        try:
+            parsed = json.loads(customer_info)
+            if not isinstance(parsed, list):
+                continue
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        samples.append({
+            "mid": mid,
+            "uid": uid,
+            "content": content,
+            "media_type": "image",
+            "media_info": [{"media_type": "1", "customer_info": customer_info}],
+            "expected_layer": "未知",
+            "note": f"来自 HDFS 数据 dt={dt}",
+            "dt": dt,
+        })
+    return samples
+
+
+def load_samples_from_hdfs(hdfs_path: str, logger: logging.Logger) -> Tuple[List[dict], str]:
+    """从 HDFS/本地文件加载图文样本"""
+    lines = read_hdfs_or_local_lines(hdfs_path, logger)
+    samples = parse_image_hdfs_lines(lines)
+    return samples, f"HDFS数据: {hdfs_path}"
+
+
+def load_samples_from_fixtures() -> Tuple[List[dict], str]:
+    """从 fixtures 加载图片样本"""
+    fixtures_path = os.path.join(FIXTURES_DIR, "image_samples.jsonl")
+    if not os.path.exists(fixtures_path):
+        return [], "fixtures 不存在"
+
+    samples = []
+    with open(fixtures_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                samples.append(json.loads(line))
+    return samples, f"fixtures: {fixtures_path}"
+
+
+def load_samples(input_hdfs: str, logger: logging.Logger) -> Tuple[List[dict], str]:
+    """按优先级加载样本：HDFS > fixtures > fallback"""
+    # 1. HDFS
+    if input_hdfs:
+        samples, source = load_samples_from_hdfs(input_hdfs, logger)
+        if samples:
+            return samples, source
+        logger.warning(f"HDFS 文件未返回有效样本: {input_hdfs}，尝试 fallback")
+
+    # 2. fixtures
+    samples, source = load_samples_from_fixtures()
+    if samples:
+        return samples, source
+    logger.warning("fixtures 未返回有效样本，使用内置 fallback")
+
+    # 3. fallback
+    return FALLBACK_SAMPLES, "内置 fallback 样本"
+
+
 def extract_pids_from_media_info(media_info: list) -> list:
     """从 media_info 中提取图片 pid 列表"""
     pids = []
@@ -111,21 +237,6 @@ def extract_pids_from_media_info(media_info: list) -> list:
             except (json.JSONDecodeError, TypeError):
                 pass
     return pids
-
-
-def load_samples():
-    """从 fixtures 加载图片样本，不存在则用 fallback"""
-    fixtures_path = os.path.join(FIXTURES_DIR, "image_samples.jsonl")
-    if os.path.exists(fixtures_path):
-        samples = []
-        with open(fixtures_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    samples.append(json.loads(line))
-        return samples, fixtures_path
-    else:
-        return FALLBACK_SAMPLES, "内置 fallback 样本"
 
 
 def run_test(sample: dict, classifier: BlogClassifier, verbose: bool, logger: logging.Logger) -> dict:
@@ -196,8 +307,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
+    parser.add_argument("--input-hdfs", default=DEFAULT_HDFS_PATH,
+                        help="HDFS 图文文件路径（默认使用项目测试数据）")
     parser.add_argument("--index", type=int, default=0,
-                        help="使用 fixtures 中第几条样本（从0开始，默认0）")
+                        help="使用 HDFS/fixtures 中第几条样本（从0开始，默认0）")
     parser.add_argument("--mid", default="", help="自定义博文ID")
     parser.add_argument("--uid", default="", help="自定义用户ID")
     parser.add_argument("--content", default="", help="自定义博文内容")
@@ -241,7 +354,7 @@ def main():
         }
         data_source = "命令行参数"
     else:
-        samples, data_source = load_samples()
+        samples, data_source = load_samples(args.input_hdfs, logger)
         if args.index >= len(samples):
             logger.error(f"--index {args.index} 超出范围（共 {len(samples)} 条）")
             sys.exit(1)

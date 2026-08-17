@@ -45,14 +45,17 @@ import sys
 import json
 import argparse
 import logging
+import subprocess
 import tempfile
 from datetime import datetime
+from typing import List
 
 # ── 路径设置 ──────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
-# 数据来源：HDFS 落地路径（由 sql/query_video.sh 生成）
-HDFS_DATA_PATH = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701/000000_0"
+# 默认 HDFS 数据来源（由 sql/query_video.sh 生成）
+DEFAULT_HDFS_PATH = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701/000000_0"
+HDFS_DATA_PATH = DEFAULT_HDFS_PATH
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/tmp_fixtures")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
@@ -96,17 +99,46 @@ FALLBACK_SAMPLES = [
     },
 ]
 
+def read_hdfs_or_local_lines(path: str, logger: logging.Logger) -> List[str]:
+    """
+    读取本地文件或 HDFS 文件内容，返回非空行列表。
+    若本地路径存在则直接读取；否则尝试 `hdfs dfs -cat`。
+    """
+    if os.path.exists(path):
+        logger.info(f"[Local] 读取本地文件: {path}")
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return [ln.rstrip("\n") for ln in f if ln.strip()]
 
-def load_samples_from_hdfs_data(data_path: str) -> list:
+    logger.info(f"[HDFS] 尝试读取 HDFS 文件: {path}")
+    try:
+        result = subprocess.run(
+            ["hdfs", "dfs", "-cat", path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning(f"[HDFS] 读取失败: {result.stderr[:300]}")
+            return []
+        return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.strip()]
+    except FileNotFoundError:
+        logger.warning("[HDFS] 未找到 hdfs 命令")
+        return []
+    except subprocess.TimeoutExpired:
+        logger.warning("[HDFS] 读取超时")
+        return []
+
+
+def load_samples_from_hdfs_data(data_path: str, logger: logging.Logger) -> list:
     """
     从 HDFS 落地文件加载视频样本
     字段格式：mid\tuid\tcontent\tmedia_id\tcustomer_info\tdt
     """
     samples = []
-    if not os.path.exists(data_path):
-        return samples
-
-    with open(data_path, "r", encoding="utf-8") as f:
+    lines = read_hdfs_or_local_lines(data_path, logger)
+    for line in lines:
         for line in f:
             line = line.strip()
             if not line:
@@ -172,12 +204,12 @@ def load_samples_from_fixtures(fixtures_dir: str) -> list:
     return samples
 
 
-def load_samples():
+def load_samples(input_hdfs: str, logger: logging.Logger):
     """按优先级加载样本：HDFS数据 > fixtures > fallback"""
     # 优先从 HDFS 落地数据加载
-    samples = load_samples_from_hdfs_data(HDFS_DATA_PATH)
+    samples = load_samples_from_hdfs_data(input_hdfs, logger)
     if samples:
-        return samples, f"HDFS数据: {HDFS_DATA_PATH}"
+        return samples, f"HDFS数据: {input_hdfs}"
 
     # 其次从 fixtures 加载
     samples = load_samples_from_fixtures(FIXTURES_DIR)
@@ -411,6 +443,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
+    parser.add_argument("--input-hdfs", default=DEFAULT_HDFS_PATH,
+                        help="HDFS 视频文件路径（默认使用项目测试数据）")
     parser.add_argument("--index", type=int, default=0,
                         help="使用数据中第几条样本（从0开始，默认0）")
     parser.add_argument("--mid", default="", help="自定义博文ID")
@@ -462,7 +496,7 @@ def main():
         }
         data_source = "命令行参数"
     else:
-        samples, data_source = load_samples()
+        samples, data_source = load_samples(args.input_hdfs, logger)
         if args.index >= len(samples):
             logger.error(f"--index {args.index} 超出范围（共 {len(samples)} 条）")
             sys.exit(1)
