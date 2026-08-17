@@ -291,23 +291,7 @@ class HDFSExtractor(BaseExtractor):
     HDFS 文件提取器
 
     通过 hdfs dfs -cat 直接读取 HDFS 上的 TSV 文件，无需先下载到本地。
-
-    权限问题解决方案：
-      - 若当前用户无 HDFS 访问权限，可在配置中设置 run_as_user，
-        此时所有 hdfs 命令会通过 sudo -u {run_as_user} 执行。
-      - 运行脚本的用户需要对 sudo 免密或使用 --input 指定已导出的本地文件。
     """
-
-    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
-        super().__init__(config, logger)
-        cfg = self.config.get("hdfs", {})
-        self.run_as_user = cfg.get("run_as_user", "").strip()
-
-    def _build_hdfs_cmd(self, sub_cmd: List[str]) -> List[str]:
-        """根据 run_as_user 构建带 sudo 的 hdfs 命令"""
-        if self.run_as_user:
-            return ["sudo", "-u", self.run_as_user, "hdfs", "dfs"] + sub_cmd
-        return ["hdfs", "dfs"] + sub_cmd
 
     def extract(self) -> List[BlogItem]:
         cfg = self.config.get("hdfs", {})
@@ -318,8 +302,7 @@ class HDFSExtractor(BaseExtractor):
         if not hdfs_path:
             raise ValueError("HDFS 路径未配置: hdfs.file_path")
 
-        run_as_info = f" (sudo as {self.run_as_user})" if self.run_as_user else ""
-        self.logger.info(f"[HDFS] 读取 HDFS 文件{run_as_info}: {hdfs_path}")
+        self.logger.info(f"[HDFS] 读取 HDFS 文件: {hdfs_path}")
         lines = self._run_hdfs_cat(hdfs_path)
 
         if not lines:
@@ -343,14 +326,14 @@ class HDFSExtractor(BaseExtractor):
             # 支持通配符 part-*
             if not hdfs_path.endswith("*") and "/part-" not in hdfs_path:
                 # 自动探测 part 文件
-                check_cmd = self._build_hdfs_cmd(["-ls", hdfs_path])
+                check_cmd = ["hdfs", "dfs", "-ls", hdfs_path]
                 check_result = subprocess.run(
                     check_cmd, capture_output=True, text=True, timeout=60
                 )
                 if "part-" in check_result.stdout:
                     hdfs_path = f"{hdfs_path.rstrip('/')}/part-*"
 
-            cmd = self._build_hdfs_cmd(["-cat", hdfs_path])
+            cmd = ["hdfs", "dfs", "-cat", hdfs_path]
             self.logger.debug(f"[HDFS] CMD: {' '.join(cmd)}")
 
             result = subprocess.run(

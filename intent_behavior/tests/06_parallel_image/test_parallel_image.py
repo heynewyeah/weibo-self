@@ -21,22 +21,21 @@ HDFS 字段说明（query_image.sh 导出格式）：
   mid \t uid \t content \t media_id \t customer_info(pid列表) \t dt
   其中 customer_info 为 JSON 数组字符串，如 ["pid1","pid2"]
 
-输出路径（默认 /tmp，避免代码目录权限问题）：
-  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>.json
-  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>.tsv
-  /tmp/xuanyu11_intent_behavior_output/parallel_image_<timestamp>_summary.txt
+输出路径：
+  tests/06_parallel_image/output/parallel_image_<timestamp>.json
+  tests/06_parallel_image/output/parallel_image_<timestamp>.tsv
+  tests/06_parallel_image/output/parallel_image_<timestamp>_summary.txt
 
 运行方式：
-  # 从 HDFS 读取图文博文并并发分类（xuanyu11 用户下用 sudo 借 adsfst 权限）
+  # 从 HDFS 读取图文博文并并发分类
   python3 tests/06_parallel_image/test_parallel_image.py \
       --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701 \
-      --hdfs-user adsfst \
       --workers 10 --limit 100
 
-  # 已用 adsfst 导出到本地文件后再分类（无需 sudo）
+  # 本地 JSONL 测试
   python3 tests/06_parallel_image/test_parallel_image.py \
       --input tests/01_prepare_data/fixtures/image_samples.jsonl \
-      --workers 10 --limit 50
+      --workers 10 --limit 20
 
 运行时间预估：
   - 100 条图文、10 并发：约 60~180 秒（取决于图片下载和模型响应速度）
@@ -61,7 +60,7 @@ from typing import List, Dict, Optional, Tuple
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/fixtures")
-DEFAULT_OUTPUT_DIR = "/tmp/xuanyu11_intent_behavior_output"
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 sys.path.insert(0, PROJECT_DIR)
 
@@ -159,15 +158,13 @@ def load_local_data(input_path: str) -> Tuple[List[Dict], str]:
         return load_tsv(input_path), input_path
 
 
-def load_hdfs_data(hdfs_path: str, hdfs_user: str,
-                   logger: logging.Logger) -> Tuple[List[Dict], str]:
+def load_hdfs_data(hdfs_path: str, logger: logging.Logger) -> Tuple[List[Dict], str]:
     """通过 HDFSExtractor 读取 HDFS 上的 TSV 数据，并转换为 Dict 列表"""
     from src.data_extractor import HDFSExtractor
 
     extractor_cfg = {
         "hdfs": {
             "file_path": hdfs_path,
-            "run_as_user": hdfs_user,
             "has_header": False,
             "field_mapping": {
                 "mid": 0,
@@ -199,9 +196,8 @@ def load_data(args, logger: logging.Logger) -> Tuple[List[Dict], str]:
     """按优先级加载测试数据"""
     # 1. HDFS
     if args.input_hdfs:
-        run_as_info = f" (sudo as {args.hdfs_user})" if args.hdfs_user else ""
-        logger.info(f"从 HDFS 加载数据{run_as_info}: {args.input_hdfs}")
-        items, source = load_hdfs_data(args.input_hdfs, args.hdfs_user, logger)
+        logger.info(f"从 HDFS 加载数据: {args.input_hdfs}")
+        items, source = load_hdfs_data(args.input_hdfs, logger)
         return items, source
 
     # 2. 本地文件
@@ -444,15 +440,10 @@ def main():
                         help="配置文件路径")
     parser.add_argument("--timeout", type=int, default=0,
                         help="单条请求超时（秒，0=使用配置文件）")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
-                        help=f"结果输出目录（默认 {DEFAULT_OUTPUT_DIR}）")
-    parser.add_argument("--hdfs-user", default="",
-                        help="HDFS 命令执行用户（如 adsfst），会通过 sudo -u 执行 hdfs 命令")
     args = parser.parse_args()
 
     # ── 初始化 ────────────────────────────────────────────────
-    output_dir = args.output_dir
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     logger = setup_logger("test_parallel_image", log_dir=os.path.join(PROJECT_DIR, "logs"))
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -531,9 +522,9 @@ def main():
     )
 
     # ── 保存结果 ──────────────────────────────────────────────
-    output_json = os.path.join(output_dir, f"parallel_image_{run_ts}.json")
-    output_tsv = os.path.join(output_dir, f"parallel_image_{run_ts}.tsv")
-    output_summary = os.path.join(output_dir, f"parallel_image_{run_ts}_summary.txt")
+    output_json = os.path.join(OUTPUT_DIR, f"parallel_image_{run_ts}.json")
+    output_tsv = os.path.join(OUTPUT_DIR, f"parallel_image_{run_ts}.tsv")
+    output_summary = os.path.join(OUTPUT_DIR, f"parallel_image_{run_ts}_summary.txt")
 
     output_data = {
         "test_type": "parallel_image",

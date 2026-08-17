@@ -17,21 +17,15 @@
   3. tests/01_prepare_data/fixtures/text_samples.jsonl
   4. 内置 fallback 样本
 
-输出路径（默认 /tmp，避免代码目录权限问题）：
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>.json    — 完整结果
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>.tsv     — TSV 汇总
-  /tmp/xuanyu11/intent_behavior_output/parallel_text_<timestamp>_summary.txt — 摘要
+输出路径：
+  tests/06_parallel_text/output/parallel_text_<timestamp>.json    — 完整结果
+  tests/06_parallel_text/output/parallel_text_<timestamp>.tsv     — TSV 汇总
+  tests/06_parallel_text/output/parallel_text_<timestamp>_summary.txt — 摘要
 
 运行方式：
-  # 从 HDFS 读取文本博文并并发分类（xuanyu11 用户下用 sudo 借 adsfst 权限）
+  # 从 HDFS 读取文本博文并并发分类（推荐）
   python3 tests/06_parallel_text/test_parallel_text.py \
       --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
-      --hdfs-user adsfst \
-      --workers 10 --limit 100
-
-  # 已用 adsfst 导出到本地文件后再分类（无需 sudo）
-  python3 tests/06_parallel_text/test_parallel_text.py \
-      --input /tmp/xuanyu11_intent_behavior_data/text_samples.tsv \
       --workers 10 --limit 100
 
   # 本地 JSONL 测试
@@ -65,7 +59,7 @@ from typing import List, Dict, Optional, Tuple
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/fixtures")
-DEFAULT_OUTPUT_DIR = "/tmp/xuanyu11/intent_behavior_output"
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 sys.path.insert(0, PROJECT_DIR)
 
@@ -143,16 +137,13 @@ def load_local_data(input_path: str) -> Tuple[List[Dict], str]:
         return load_tsv(input_path), input_path
 
 
-def load_hdfs_data(hdfs_path: str, hdfs_user: str,
-                   logger: logging.Logger) -> Tuple[List[Dict], str]:
+def load_hdfs_data(hdfs_path: str, logger: logging.Logger) -> Tuple[List[Dict], str]:
     """通过 HDFSExtractor 读取 HDFS 上的 TSV 数据，并转换为 Dict 列表"""
     from src.data_extractor import HDFSExtractor
 
-    # 构造临时 extractor 配置
     extractor_cfg = {
         "hdfs": {
             "file_path": hdfs_path,
-            "run_as_user": hdfs_user,
             "has_header": False,
             "field_mapping": {"mid": 0, "content": 1, "dt": 2},
         }
@@ -161,7 +152,6 @@ def load_hdfs_data(hdfs_path: str, hdfs_user: str,
     extractor = HDFSExtractor(extractor_cfg, logger)
     blog_items = extractor.extract()
 
-    # 转为 Dict 列表，保持与本地数据一致
     items = []
     for bi in blog_items:
         items.append({
@@ -176,12 +166,11 @@ def load_hdfs_data(hdfs_path: str, hdfs_user: str,
 def load_data(args, logger: logging.Logger) -> Tuple[List[Dict], str]:
     """按优先级加载测试数据"""
     # 1. HDFS
-    # 1. HDFS
     if args.input_hdfs:
-        run_as_info = f" (sudo as {args.hdfs_user})" if args.hdfs_user else ""
-        logger.info(f"从 HDFS 加载数据{run_as_info}: {args.input_hdfs}")
-        items, source = load_hdfs_data(args.input_hdfs, args.hdfs_user, logger)
+        logger.info(f"从 HDFS 加载数据: {args.input_hdfs}")
+        items, source = load_hdfs_data(args.input_hdfs, logger)
         return items, source
+
     # 2. 本地文件
     if args.input:
         if not os.path.exists(args.input):
@@ -379,15 +368,10 @@ def main():
                         help="配置文件路径")
     parser.add_argument("--timeout", type=int, default=0,
                         help="单条请求超时（秒，0=使用配置文件）")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
-                        help=f"结果输出目录（默认 {DEFAULT_OUTPUT_DIR}）")
-    parser.add_argument("--hdfs-user", default="",
-                        help="HDFS 命令执行用户（如 adsfst），会通过 sudo -u 执行 hdfs 命令")
     args = parser.parse_args()
 
     # ── 初始化 ────────────────────────────────────────────────
-    output_dir = args.output_dir
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     logger = setup_logger("test_parallel_text", log_dir=os.path.join(PROJECT_DIR, "logs"))
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -402,7 +386,6 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # 若命令行指定 timeout，覆盖配置
     if args.timeout > 0:
         config["api"]["timeout"] = args.timeout
 
@@ -415,7 +398,6 @@ def main():
     # ── 加载数据 ──────────────────────────────────────────────
     raw_items, data_source = load_data(args, logger)
 
-    # 补充 index 字段
     for i, item in enumerate(raw_items):
         item["index"] = i + 1
 
@@ -448,7 +430,6 @@ def main():
             results.append(record)
             completed += 1
 
-            # 每 10% 或每 10 条打印一次进度
             if completed % max(1, total // 10) == 0 or completed == total or completed % 10 == 0:
                 success_so_far = sum(1 for r in results if r["success"])
                 fail_so_far = completed - success_so_far
@@ -469,11 +450,10 @@ def main():
     )
 
     # ── 保存结果 ──────────────────────────────────────────────
-    output_json = os.path.join(output_dir, f"parallel_text_{run_ts}.json")
-    output_tsv = os.path.join(output_dir, f"parallel_text_{run_ts}.tsv")
-    output_summary = os.path.join(output_dir, f"parallel_text_{run_ts}_summary.txt")
+    output_json = os.path.join(OUTPUT_DIR, f"parallel_text_{run_ts}.json")
+    output_tsv = os.path.join(OUTPUT_DIR, f"parallel_text_{run_ts}.tsv")
+    output_summary = os.path.join(OUTPUT_DIR, f"parallel_text_{run_ts}_summary.txt")
 
-    # 1. JSON 完整结果
     output_data = {
         "test_type": "parallel_text",
         "run_time": datetime.now().isoformat(),
@@ -491,7 +471,6 @@ def main():
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-    # 2. TSV 汇总
     with open(output_tsv, "w", encoding="utf-8") as f:
         f.write("index\tmid\tuid\tactual_layer\tsuccess\terror\telapsed_ms\n")
         for r in results:
@@ -500,7 +479,6 @@ def main():
                 f"{r['success']}\t{r['error'] or ''}\t{r['elapsed_ms']}\n"
             )
 
-    # 3. 摘要文本
     with open(output_summary, "w", encoding="utf-8") as f:
         f.write("\n".join(summary_lines) + "\n")
 
@@ -511,7 +489,6 @@ def main():
     logger.info(f"  摘要:    {output_summary}")
     logger.info("=" * 60)
 
-    # 失败率超过 20% 时非零退出
     if summary_dict["success_rate"] < 0.8:
         logger.warning(f"成功率 {summary_dict['success_rate']*100:.1f}% 低于 80%，退出码 1")
         sys.exit(1)

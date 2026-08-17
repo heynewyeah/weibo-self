@@ -120,12 +120,11 @@ python3 tests/04_consistency/test_consistency.py --type text
 ```
 
 ### 6. 并行批量文本测试（从 HDFS）
-
 ```bash
-# 从 HDFS 读取 100 条文本博文，10 并发分类（xuanyu11 借 adsfst HDFS 权限）
+# 从 HDFS 读取 100 条文本博文，10 并发分类
 python3 tests/06_parallel_text/test_parallel_text.py \
   --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
-  --hdfs-user adsfst \
+  --workers 10 --limit 100
   --workers 10 --limit 100
 
 # 本地 JSONL 测试
@@ -137,10 +136,9 @@ python3 tests/06_parallel_text/test_parallel_text.py \
 ### 7. 并行批量图文测试（从 HDFS）
 
 ```bash
-# 从 HDFS 读取 100 条图文博文，10 并发分类（xuanyu11 借 adsfst HDFS 权限）
+# 从 HDFS 读取 100 条图文博文，10 并发分类
 python3 tests/06_parallel_image/test_parallel_image.py \
   --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701 \
-  --hdfs-user adsfst \
   --workers 10 --limit 100
 
 # 本地 JSONL 测试
@@ -240,46 +238,16 @@ mid	uid	error_type	error_detail
 
 ## 数据路径
 
+## 数据路径
+
 | 路径 | 说明 |
 |------|------|
 | `/dw_ext/ad/person/xuanyu11/intent_behavior/data/` | HDFS 数据目录 |
 | `/dw_ext/ad/person/xuanyu11/intent_behavior/data/test_samples/` | HDFS 测试数据 |
 | `/dw_ext/ad/person/xuanyu11/intent_behavior/output/` | HDFS 结果目录 |
 | `tests/01_prepare_data/fixtures/` | 本地测试数据 |
-| `/tmp/xuanyu11_intent_behavior_output/` | 并行测试默认输出目录（双用户可写） |
-
-### 跨用户权限解决方案
-
-场景：
-- `xuanyu11` 用户拥有代码目录写入权限
-- `adsfst` 用户拥有 HDFS 访问权限
-- 同一个脚本若同时写入代码目录并访问 HDFS，则无法在同一用户下执行
-
-解决方案：
-1. **输出目录改到 `/tmp`**：并行测试脚本默认将结果写入 `/tmp/xuanyu11_intent_behavior_output/`，该目录对两个用户均可写，避免污染代码目录。
-2. **HDFS 命令支持 `sudo -u`**：在 `config.yaml` 中设置 `extractor.hdfs.run_as_user: "adsfst"`，或在命令行指定 `--hdfs-user adsfst`，`HDFSExtractor` 会自动通过 `sudo -u adsfst hdfs dfs ...` 读取 HDFS。
-3. **两阶段兜底**：若环境未配置 sudo，可先用 `adsfst` 用户将 HDFS 数据导出到本地 TSV，再用 `xuanyu11` 用户通过 `--input` 指定该文件运行分类。
-
-```bash
-# 方案A：单脚本 + sudo（推荐）
-python3 tests/06_parallel_text/test_parallel_text.py \
-  --input-hdfs /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701 \
-  --hdfs-user adsfst \
-  --workers 10 --limit 100
-
-# 方案B：先导出再分类（无需 sudo）
-# 1. adsfst 用户执行
-hdfs dfs -cat /dw_ext/ad/person/xuanyu11/intent_behavior/data/text_weibo_ad_20260701_20260701/* \
-  > /tmp/xuanyu11_intent_behavior_data/text_samples.tsv
-# 2. xuanyu11 用户执行
-python3 tests/06_parallel_text/test_parallel_text.py \
-  --input /tmp/xuanyu11_intent_behavior_data/text_samples.tsv \
-  --workers 10 --limit 100
-```
 
 ---
-
-## 扩展视频功能
 
 1. 在 `config.yaml` 中设置 `media.video.enabled: true`
 2. 在 `src/media_handler.py` 的 `VideoHandler` 中实现：
