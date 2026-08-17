@@ -14,6 +14,11 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from .models import BlogItem, ClassifyResult, MediaType
+
+
+# 项目根目录与默认缓存目录
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEFAULT_CACHE_DIR = os.path.join(PROJECT_ROOT, "output", ".cache")
 from .api_client import VLLMClient
 from .media_handler import ImageHandler, VideoHandler
 from .utils import extract_label, validate_input, write_error_record, write_result
@@ -187,7 +192,7 @@ class BlogClassifier:
             return result
 
         # 下载图片
-        tmp_dir = f"/tmp/xuanyu11/blog_images_{item.mid}"
+        tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images", item.mid)
         image_paths = self.image_handler.download_images_by_pids(pids, tmp_dir)
 
         if not image_paths:

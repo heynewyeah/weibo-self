@@ -15,6 +15,11 @@ import requests
 from typing import Optional, List, Dict, Any
 
 
+# 项目根目录与默认缓存目录
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEFAULT_CACHE_DIR = os.path.join(PROJECT_ROOT, "output", ".cache")
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,7 +127,9 @@ class ImageHandler:
         return False
 
     def download_images_by_pids(self, pids: List[str],
-                                tmp_dir: str = "/tmp/xuanyu11/blog_images") -> List[str]:
+                                tmp_dir: str = None) -> List[str]:
+        if tmp_dir is None:
+            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images")
         """
         批量下载图片
 
@@ -301,7 +308,9 @@ class VideoHandler:
         return False
 
     def extract_frames(self, video_path: str, num_frames: int = None,
-                       output_dir: str = "/tmp/xuanyu11/video_frames") -> List[str]:
+                       output_dir: str = None) -> List[str]:
+        if output_dir is None:
+            output_dir = os.path.join(DEFAULT_CACHE_DIR, "video_frames")
         """
         使用 OpenCV 从视频中均匀抽取关键帧
 
@@ -382,7 +391,9 @@ class VideoHandler:
         return frame_paths
 
     def process_video_cover(self, media_id: str, customer_id: str = None,
-                            tmp_dir: str = "/tmp/xuanyu11/video_covers") -> List[str]:
+                            tmp_dir: str = None) -> List[str]:
+        if tmp_dir is None:
+            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "video_covers")
         """
         方案A（cover）：获取封面图 → 下载 → 返回封面图路径列表
 
@@ -407,7 +418,9 @@ class VideoHandler:
         return []
 
     def process_video_frames(self, media_id: str, customer_id: str = None,
-                             tmp_dir: str = "/tmp/xuanyu11/video_frames") -> List[str]:
+                             tmp_dir: str = None) -> List[str]:
+        if tmp_dir is None:
+            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "video_frames")
         """
         方案B（frame）：获取视频URL → 下载视频 → OpenCV抽帧 → 返回帧路径列表
 

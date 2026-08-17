@@ -57,6 +57,7 @@ PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 DEFAULT_HDFS_PATH = "/dw_ext/ad/person/xuanyu11/intent_behavior/data/video_weibo_ad_20260701_20260701/000000_0"
 HDFS_DATA_PATH = DEFAULT_HDFS_PATH
 FIXTURES_DIR = os.path.join(PROJECT_DIR, "tests/01_prepare_data/tmp_fixtures")
+CACHE_DIR = os.path.join(PROJECT_DIR, "output", ".cache")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 sys.path.insert(0, PROJECT_DIR)
@@ -230,7 +231,9 @@ def classify_with_cover(cover_url: str, content: str, mid: str,
 
     logger.info(f"  [cover 模式] 封面图: {cover_url}")
 
-    tmp_path = os.path.join(tempfile.gettempdir(), f"cover_{mid}.jpg")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tmp_path = os.path.join(CACHE_DIR, "video_covers", f"cover_{mid}.jpg")
+    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
     try:
         resp = requests.get(cover_url, timeout=30, stream=True)
         resp.raise_for_status()
@@ -289,7 +292,8 @@ def classify_with_frames(fid: str, customer_id: str, content: str, mid: str,
 
     handler = VideoHandler(video_config, logger)
 
-    tmp_dir = os.path.join("/tmp/xuanyu11", f"video_frames_{mid}")
+    tmp_dir = os.path.join(CACHE_DIR, "video_frames", mid)
+    os.makedirs(tmp_dir, exist_ok=True)
     frame_paths = handler.process_video_frames(fid, customer_id, tmp_dir)
 
     if not frame_paths:
