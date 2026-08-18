@@ -166,7 +166,10 @@ mysql:
   shard_table_prefix: "nature_ad_super_mid_"
   active_task_type: 1
   inactive_exec_status: 5
+  task_id_field: "task_id"
   task_customer_id_field: "customer_id"
+  shard_task_match_field: "super_task_id"
+  test_customer_id: 2608812381
 
 # MySQL worker 轮询配置
 worker:

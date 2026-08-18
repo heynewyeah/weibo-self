@@ -2,11 +2,12 @@
 MySQL 分表持续消费 worker。
 
 流程：
-1. 查询 [`super_mid_task`](intent_behavior/src/db_client.py:1) 中有效任务
-2. 动态路由到 [`nature_ad_super_mid_{customer_id % 20}`](intent_behavior/src/db_client.py:1)
+1. 查询 `super_mid_task` 中有效任务
+2. 动态路由到 `nature_ad_super_mid_{customer_id % 20}`
 3. 拉取 `level=0` 的待分类 mid
-4. 调用 [`BlogClassifier.classify_item()`](intent_behavior/src/classifier.py:81)
+4. 调用 `BlogClassifier.classify_item()`
 5. 将结果回写到分表 `level` / `level_time`
+6. 异常场景回写错误字段，而不是仅日志记录
 
 当前实现为单进程串行版本，优先保证：
 - 路由正确
@@ -20,11 +21,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from .classifier import BlogClassifier
 from .db_client import MySQLTaskRepository, TaskRecord, MidRecord, build_blog_items
-from .utils import setup_logger
 
 
 @dataclass
@@ -175,6 +175,16 @@ class MySQLShardWorker:
                 record.mid,
                 exc,
             )
+            try:
+                self.repo.update_record_failure(conn, record, str(exc))
+            except Exception as write_exc:
+                self.logger.exception(
+                    "失败回写再次失败 task_id=%s row_id=%s mid=%s error=%s",
+                    task.id,
+                    record.id,
+                    record.mid,
+                    write_exc,
+                )
             return False
 
 

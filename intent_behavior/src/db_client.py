@@ -3,15 +3,18 @@ MySQL 分表任务消费与 level 回写实现。
 
 核心职责：
 1. 连接 clue_collect_common 库
-2. 查询 [`super_mid_task`](intent_behavior/src/db_client.py:1) 中有效任务
-3. 根据 customer_id % 20 路由到 [`nature_ad_super_mid_{shard}`](intent_behavior/src/db_client.py:1)
+2. 查询 `super_mid_task` 中有效任务
+3. 根据 customer_id % 20 路由到 `nature_ad_super_mid_{shard}`
 4. 拉取 level=0 的待处理记录
-5. 映射为 [`BlogItem`](intent_behavior/src/models.py:28)
+5. 映射为 BlogItem
 6. 将分类结果回写到分表 level / level_time
+7. 处理失败时回写错误字段，而不是只写日志
 
 说明：
 - 当前开发环境通常仅有 `nature_ad_super_mid_1` 可用，因此代码默认做“表存在性检测”。
 - 为保证兼容性，优先使用 `pymysql`。若环境未安装，运行时会抛出明确错误。
+- `super_mid_task` 当前真实表结构不包含 `customer_id` 字段，因此支持从配置指定测试字段，
+  也支持通过 join / mock / 扩展字段方式兼容测试阶段。
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import BlogItem, ClassifyResult
 
@@ -39,9 +42,10 @@ LEVEL_MAPPING = {
 
 @dataclass
 class TaskRecord:
-    """[`super_mid_task`](intent_behavior/src/db_client.py:1) 中的有效任务记录。"""
+    """`super_mid_task` 中的有效任务记录。"""
 
     id: int
+    task_id: int
     customer_id: int
     task_type: int
     exec_status: int
@@ -58,7 +62,7 @@ class TaskRecord:
 
 @dataclass
 class MidRecord:
-    """[`nature_ad_super_mid_x`](intent_behavior/src/db_client.py:1) 中待处理记录。"""
+    """`nature_ad_super_mid_x` 中待处理记录。"""
 
     id: int
     customer_id: int
@@ -101,9 +105,7 @@ class MySQLTaskRepository:
         try:
             import pymysql  # type: ignore
         except ImportError as exc:
-            raise RuntimeError(
-                "未安装 pymysql，请先执行: pip install pymysql"
-            ) from exc
+            raise RuntimeError("未安装 pymysql，请先执行: pip install pymysql") from exc
         self._driver = pymysql
         return self._driver
 
@@ -159,14 +161,21 @@ class MySQLTaskRepository:
 
         tasks: List[TaskRecord] = []
         customer_field = self.config.get("task_customer_id_field", "customer_id")
+        task_id_field = self.config.get("task_id_field", "task_id")
+        fallback_customer_id = int(self.config.get("test_customer_id", 0) or 0)
+
         for row in rows:
-            customer_id = int(row.get(customer_field, 0) or 0)
+            customer_id = int(row.get(customer_field, 0) or fallback_customer_id or 0)
             if customer_id <= 0:
-                self.logger.warning("任务缺少有效 customer_id，跳过: id=%s", row.get("id"))
+                self.logger.warning(
+                    "任务缺少有效 customer_id，跳过: id=%s，可通过 mysql.test_customer_id 做测试注入",
+                    row.get("id"),
+                )
                 continue
             tasks.append(
                 TaskRecord(
                     id=int(row.get("id", 0)),
+                    task_id=int(row.get(task_id_field, 0) or 0),
                     customer_id=customer_id,
                     task_type=int(row.get("task_type", 0) or 0),
                     exec_status=int(row.get("exec_status", 0) or 0),
@@ -187,18 +196,20 @@ class MySQLTaskRepository:
             self.logger.warning("分表不存在，跳过: %s", table)
             return []
 
+        task_match_field = self.config.get("shard_task_match_field", "super_task_id")
+        task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
         level_cond = "AND level = 0" if only_level_zero else ""
         sql = f"""
         SELECT *
         FROM {table}
         WHERE customer_id = %s
-          AND super_task_id = %s
+          AND {task_match_field} = %s
           {level_cond}
         ORDER BY id ASC
         LIMIT %s
         """
         with conn.cursor() as cur:
-            cur.execute(sql, (task.customer_id, task.id, limit))
+            cur.execute(sql, (task.customer_id, task_match_value, limit))
             rows = cur.fetchall() or []
 
         return [self._row_to_mid_record(row) for row in rows]
@@ -213,18 +224,46 @@ class MySQLTaskRepository:
         UPDATE {table}
         SET level = %s,
             level_time = %s,
-            mtime = CURRENT_TIMESTAMP
+            mtime = CURRENT_TIMESTAMP,
+            transfer_score_error_code = %s,
+            transfer_score_error_detail = %s
         WHERE id = %s
         """
+        error_code = 0 if result.success else 1
+        error_detail = "" if result.success else (result.error or result.model_output or "分类失败")[:300]
         with conn.cursor() as cur:
-            cur.execute(sql, (level_value, datetime.now(), record.id))
+            cur.execute(sql, (level_value, datetime.now(), error_code, error_detail, record.id))
         self.logger.info(
-            "回写成功 table=%s id=%s mid=%s layer=%s(%s)",
+            "回写成功 table=%s id=%s mid=%s layer=%s(%s) success=%s",
             table,
             record.id,
             record.mid,
             result.layer,
             level_value,
+            result.success,
+        )
+
+    def update_record_failure(self, conn, record: MidRecord, error_msg: str) -> None:
+        table = f"nature_ad_super_mid_{int(record.customer_id) % 20}"
+        if not self.table_exists(conn, table):
+            raise RuntimeError(f"失败回写失败，分表不存在: {table}")
+
+        sql = f"""
+        UPDATE {table}
+        SET transfer_score_error_code = %s,
+            transfer_score_error_detail = %s,
+            mtime = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """
+        error_detail = (error_msg or "未知异常")[:300]
+        with conn.cursor() as cur:
+            cur.execute(sql, (1, error_detail, record.id))
+        self.logger.warning(
+            "失败回写完成 table=%s id=%s mid=%s error=%s",
+            table,
+            record.id,
+            record.mid,
+            error_detail,
         )
 
     def _row_to_mid_record(self, row: Dict[str, Any]) -> MidRecord:
