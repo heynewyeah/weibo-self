@@ -6,6 +6,7 @@ super_mid_task 测试脚本。
 1. 验证 [`super_mid_task`](intent_behavior/tests/07_mysql_worker/test_super_mid_task.py:1) 真实表结构能否被当前仓储正确读取
 2. 在测试阶段通过 [`mysql.test_customer_id`](intent_behavior/config/config.yaml:157) 注入 customer_id，绕过主表暂时缺失该字段的问题
 3. 输出有效任务、路由分表、待处理记录预览
+4. 仅作为主表读取与路由验证脚本；若要直接验证分表样例，请使用 [`test_nature_ad_super_mid.py`](intent_behavior/tests/07_mysql_worker/test_nature_ad_super_mid.py:1)
 
 运行示例：
   python3 tests/07_mysql_worker/test_super_mid_task.py --limit 10

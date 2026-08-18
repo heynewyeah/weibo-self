@@ -187,21 +187,36 @@ pip install -r requirements.txt
 python3 worker.py --config config/config.yaml --once
 ```
 
-### 第二步：确认 [`super_mid_task`](../src/db_client.py) 字段名
+### 第二步：验证 [`nature_ad_super_mid_x`](../tests/07_mysql_worker/test_nature_ad_super_mid.py) 分表测试样例
 
-重点确认：
-- `id`
-- `customer_id`
-- `task_type`
-- `exec_status`
+推荐直接执行：
 
-### 第三步：确认分表数据样例
+```bash
+python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --limit 10
+```
 
 重点确认：
 - `mid_text`
 - `mid_pids`
 - `mid_fids`
 - `level`
+- `BlogItem` 字段映射是否正确
+
+如需直接跑分类验证：
+
+```bash
+python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --run-classify --limit 3
+```
+
+### 第三步：按需验证 [`super_mid_task`](../tests/07_mysql_worker/test_super_mid_task.py) 主表读取与路由
+
+```bash
+python3 tests/07_mysql_worker/test_super_mid_task.py --limit 10
+```
+
+用途：
+- 验证主表结构读取是否正常
+- 验证测试注入的 `customer_id` 是否能正确路由到分表
 
 ### 第四步：插入测试数据后执行单轮
 
@@ -209,6 +224,7 @@ python3 worker.py --config config/config.yaml --once
 - 日志是否正确打印路由表名
 - 是否读取到待处理记录
 - 是否成功回写 `level` / `level_time`
+- 失败时是否正确回写 `transfer_score_error_code` / `transfer_score_error_detail`
 
 ---
 
@@ -216,7 +232,7 @@ python3 worker.py --config config/config.yaml --once
 
 下一轮开发建议按优先级继续补这 4 件事：
 
-1. 给 [`src/db_client.py`](../src/db_client.py) 增加失败回写字段
-2. 增加 [`tests/07_mysql_worker/`](../tests/) 测试目录，做本地假数据与 SQL 样例测试
-3. 增加并发 worker 版本
-4. 将 `level` 回写之外，再补一份独立 AI 分类结果表，降低对业务字段的侵入
+1. 增加并发 worker 版本
+2. 将 `level` 回写之外，再补一份独立 AI 分类结果表，降低对业务字段的侵入
+3. 明确 `super_mid_task -> customer_id` 的正式映射来源，去掉测试注入逻辑
+4. 为 [`tests/07_mysql_worker/test_nature_ad_super_mid.py`](../tests/07_mysql_worker/test_nature_ad_super_mid.py) 增加断言型自动化测试
