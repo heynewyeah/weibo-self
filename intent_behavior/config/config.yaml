@@ -154,6 +154,27 @@ extractor:
       content: 1
       dt: 2
 
+# MySQL 分表任务消费配置
+mysql:
+  host: "10.79.104.30"
+  port: 3306
+  user: "clue_collect"
+  password: "clue_collect"
+  database: "clue_collect_common"
+  charset: "utf8mb4"
+  task_table: "super_mid_task"
+  shard_table_prefix: "nature_ad_super_mid_"
+  active_task_type: 1
+  inactive_exec_status: 5
+  task_customer_id_field: "customer_id"
+
+# MySQL worker 轮询配置
+worker:
+  poll_interval_sec: 10
+  active_task_limit: 50
+  fetch_limit_per_task: 100
+  max_loops: 0
+
 # 日志配置
 logging:
   level: "INFO"
