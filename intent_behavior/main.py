@@ -38,6 +38,7 @@ from src.classifier import BlogClassifier
 from src.data_extractor import create_extractor
 from src.models import BlogItem
 from src.utils import setup_logger
+from src.worker import create_worker
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
@@ -244,6 +245,23 @@ def run_server(args, classifier):
     print("后续可使用 Flask/FastAPI 实现，接收 (uid + mid) 的HTTP请求")
 
 
+def run_mysql_worker(args, config, logger):
+    """MySQL 分表持续消费模式。"""
+    worker = create_worker(config, logger)
+    if args.once:
+        summary = worker.run_once()
+        print("\n" + "=" * 50)
+        print("[MySQL Worker] 单轮执行完成")
+        print(f"  loops:   {summary['loops']}")
+        print(f"  tasks:   {summary['tasks']}")
+        print(f"  pending: {summary['pending']}")
+        print(f"  success: {summary['success']}")
+        print(f"  fail:    {summary['fail']}")
+        print("=" * 50)
+    else:
+        worker.run_forever()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="意图行为项目 - 博文分类服务",
@@ -263,7 +281,7 @@ def main():
   python3 main.py --mode pipeline --config config/config.yaml
         """
     )
-    parser.add_argument("--mode", choices=["single", "batch", "pipeline", "server"],
+    parser.add_argument("--mode", choices=["single", "batch", "pipeline", "server", "mysql_worker"],
                         default="single", help="运行模式")
     parser.add_argument("--config", default="config/config.yaml", help="配置文件路径")
 
@@ -280,6 +298,9 @@ def main():
 
     # server 模式参数
     parser.add_argument("--port", type=int, default=8088, help="API服务端口")
+
+    # mysql_worker 模式参数
+    parser.add_argument("--once", action="store_true", help="mysql_worker 仅执行一轮轮询")
 
     args = parser.parse_args()
 
@@ -309,6 +330,8 @@ def main():
         run_pipeline(args, config, logger)
     elif args.mode == "server":
         run_server(args, classifier)
+    elif args.mode == "mysql_worker":
+        run_mysql_worker(args, config, logger)
 
 
 if __name__ == "__main__":
