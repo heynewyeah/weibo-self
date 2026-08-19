@@ -25,8 +25,18 @@
   # 指定样本索引
   python3 tests/02_single/test_single_video.py --index 1
 
-  # 使用封面图 URL 直接测试（绕过 fid 查询）
-  python3 tests/02_single/test_single_video.py --cover-url "http://wx3.sinaimg.cn/orj480/xxx.jpg"
+  # 手动指定 mid + fid（内容可为空）
+  python3 tests/02_single/test_single_video.py --mid 5250301234567890 --fid 2362904:4666847103221848 --uid 2608812381
+
+  # 手动指定 mid + 封面图 URL（内容可为空）
+  python3 tests/02_single/test_single_video.py --mid 5250301234567890 --cover-url "http://wx3.sinaimg.cn/orj480/xxx.jpg"
+
+  # 手动指定完整参数
+  python3 tests/02_single/test_single_video.py \
+    --mid 5250301234567890 \
+    --uid 2608812381 \
+    --content "吉利银河M9极寒测试" \
+    --fid 2362904:4666847103221848
 
   # 显示模型原始输出
   python3 tests/02_single/test_single_video.py --verbose
@@ -485,7 +495,6 @@ def main():
 
     logger.info(f"模型: {config['api']['model']}")
     logger.info(f"API: {config['api']['url']}")
-
     # ── 确定测试样本 ──────────────────────────────────────────
     if args.mid and args.content:
         sample = {
@@ -499,6 +508,32 @@ def main():
             "note": "用户自定义输入"
         }
         data_source = "命令行参数"
+    elif args.mid and args.fid:
+        # 允许只传 mid + fid，内容可为空，此时用 showBatch API 查封面图
+        sample = {
+            "mid": args.mid,
+            "uid": args.uid or "custom_uid",
+            "content": args.content or "",
+            "media_type": "video",
+            "fid": args.fid,
+            "cover": args.cover_url or "",
+            "expected_layer": "未知",
+            "note": "用户自定义 mid + fid"
+        }
+        data_source = "命令行参数（mid+fid）"
+    elif args.mid and args.cover_url:
+        # 允许只传 mid + 封面图 URL，内容可为空
+        sample = {
+            "mid": args.mid,
+            "uid": args.uid or "custom_uid",
+            "content": args.content or "",
+            "media_type": "video",
+            "fid": args.fid or "",
+            "cover": args.cover_url,
+            "expected_layer": "未知",
+            "note": "用户自定义 mid + cover_url"
+        }
+        data_source = "命令行参数（mid+cover_url）"
     else:
         samples, data_source = load_samples(args.input_hdfs, logger)
         if args.index >= len(samples):
