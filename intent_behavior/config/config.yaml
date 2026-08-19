@@ -197,3 +197,10 @@ batch:
   sleep_sec: 0.3
   # 并发数（后续扩展用）
   concurrency: 1
+
+# 博文 mid 反解接口配置
+mid_resolver:
+  url: "http://terra.biz.weibo.com/mid/media"
+  timeout: 30
+  max_retry: 3
+  parse_component: 1

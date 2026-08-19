@@ -214,6 +214,43 @@ class MySQLTaskRepository:
 
         return [self._row_to_mid_record(row) for row in rows]
 
+    def fetch_pending_mids_by_table(
+        self,
+        conn,
+        table_name: str,
+        customer_id: Optional[int] = None,
+        limit: int = 100,
+        only_level_zero: bool = True,
+    ) -> List[MidRecord]:
+        """
+        直接按分表名拉取待处理记录，不依赖 super_mid_task。
+
+        适用于测试阶段直接消费某张分表中的 level=0 数据。
+        """
+        if not self.table_exists(conn, table_name):
+            self.logger.warning("分表不存在，跳过: %s", table_name)
+            return []
+
+        level_cond = "WHERE level = 0" if only_level_zero else "WHERE 1=1"
+        params: List[Any] = []
+        if customer_id is not None:
+            level_cond += " AND customer_id = %s"
+            params.append(customer_id)
+        params.append(limit)
+
+        sql = f"""
+        SELECT *
+        FROM {table_name}
+        {level_cond}
+        ORDER BY id ASC
+        LIMIT %s
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+        return [self._row_to_mid_record(row) for row in rows]
+
     def update_level_result(self, conn, record: MidRecord, result: ClassifyResult) -> None:
         table = f"nature_ad_super_mid_{int(record.customer_id) % 20}"
         if not self.table_exists(conn, table):
