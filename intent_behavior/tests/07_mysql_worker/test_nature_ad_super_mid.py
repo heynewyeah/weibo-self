@@ -3,15 +3,15 @@
 nature_ad_super_mid_x 测试脚本。
 
 用途：
-1. 在测试阶段即使 [`super_mid_task`](intent_behavior/tests/07_mysql_worker/test_nature_ad_super_mid.py:1) 没有可用实际任务，
-   也可以直接验证 [`nature_ad_super_mid_x`](intent_behavior/tests/07_mysql_worker/test_nature_ad_super_mid.py:1) 分表中的测试数据。
+1. 在测试阶段即使 `super_mid_task` 没有可用实际任务，也可以直接验证 `nature_ad_super_mid_x` 分表中的测试数据。
 2. 直接读取指定分表，检查文本 / 图片 / 视频测试样例是否存在。
-3. 将分表记录映射为 [`BlogItem`](intent_behavior/src/models.py:28)，验证字段适配是否正确。
-4. 可选调用 [`BlogClassifier.classify_item()`](intent_behavior/src/classifier.py:81) 对单条或多条分表样例进行分类验证。
+3. 将分表记录映射为 `BlogItem`，验证字段适配是否正确。
+4. 可选调用 `BlogClassifier.classify_item()` 对单条或多条分表样例进行分类验证。
+5. 分类验证成功后，把结果回写到分表的 `level` 和 `level_time`。
 
 运行示例：
   python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --limit 10
-  python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --run-classify --limit 3
+  python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --run-classify --limit 3 --write-back
 """
 
 import argparse
@@ -50,6 +50,8 @@ def main():
     parser.add_argument("--table", default="nature_ad_super_mid_1", help="要验证的分表名")
     parser.add_argument("--limit", type=int, default=10, help="最多读取多少条记录")
     parser.add_argument("--run-classify", action="store_true", help="是否对读取结果直接执行分类")
+    parser.add_argument("--write-back", action="store_true", help="是否把分类结果回写到 level / level_time")
+    parser.add_argument("--only-level-zero", action="store_true", help="只处理 level=0 的记录")
     args = parser.parse_args()
 
     config = load_config(os.path.join(PROJECT_ROOT, args.config))
@@ -73,8 +75,16 @@ def main():
         print(f"记录数: {len(rows)}")
         print("=" * 100)
 
+        processed = 0
+        success_count = 0
+        fail_count = 0
+
         for idx, row in enumerate(rows, 1):
             record = repo._row_to_mid_record(row)
+
+            if args.only_level_zero and record.level != 0:
+                continue
+
             item = record.to_blog_item()
             print(
                 f"[{idx}] row_id={record.id} customer_id={record.customer_id} "
@@ -97,7 +107,28 @@ def main():
                 )
                 if result.error:
                     print(f"    error => {result.error}")
+
+                if args.write_back:
+                    try:
+                        repo.update_level_result(conn, record, result)
+                        print(f"    write_back => level={result.layer}")
+                        success_count += 1 if result.success else 0
+                        fail_count += 0 if result.success else 1
+                    except Exception as exc:
+                        print(f"    write_back_error => {exc}")
+                        fail_count += 1
+                else:
+                    success_count += 1 if result.success else 0
+                    fail_count += 0 if result.success else 1
+
+                processed += 1
             print("-" * 100)
+
+        print("=" * 100)
+        print(f"处理记录数: {processed}")
+        print(f"成功: {success_count}")
+        print(f"失败: {fail_count}")
+        print("=" * 100)
 
 
 if __name__ == "__main__":
