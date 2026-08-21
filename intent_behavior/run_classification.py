@@ -24,7 +24,7 @@
   # 批量文件（JSONL）
   python3 run_classification.py --input-file data/input.jsonl --workers 5
 
-  # MySQL 分表 level=0 数据（自动判断类型 + 回写）
+  # MySQL 分表 level=0 数据（自动判断类型 + HTTP 回写）
   python3 run_classification.py \
       --shard-index 1 --customer-id 2608812381 --limit 100 \
       --mode auto --write-back
@@ -252,9 +252,9 @@ def main():
 
     # 输出与回写
     parser.add_argument("--write-back", action="store_true",
-                        help="将结果回写到 MySQL 分表（仅 MySQL 输入时有效）")
+                        help="将结果通过 HTTP 接口回写（仅 MySQL 输入且 workers=1 时有效）")
     parser.add_argument("--workers", type=int, default=1,
-                        help="并发数（默认 1；>1 时不支持 MySQL 回写）")
+                        help="并发数（默认 1；>1 时不支持结果回写）")
 
     # 配置
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"),

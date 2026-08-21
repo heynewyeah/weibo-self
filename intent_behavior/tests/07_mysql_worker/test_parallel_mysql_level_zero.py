@@ -3,14 +3,14 @@
 MySQL 分表 level=0 批量并行分类测试
 =====================================
 功能：直接读取某张 `nature_ad_super_mid_{shard}` 分表中 `level=0` 的记录，
-      使用 ThreadPoolExecutor 并发调用 Qwen 模型分类，并可选把结果回写到
-      分表的 `level` / `level_time` 字段。
+      使用 ThreadPoolExecutor 并发调用 Qwen 模型分类，并可选把结果通过 HTTP 接口
+      回写到王燕威服务（POST /api/v1/super-mid/update-level）。
 
 核心特点：
   - 并发请求：默认 5 并发（图文/视频下载重，建议不超过 10）
   - 数据来源：MySQL 分表 `level=0` 的记录
-  - 结果回写：可选 `--write-back`，写入 level / level_time / 错误字段
-  - 线程安全：每个工作线程持有独立 MySQL 连接；BlogClassifier 可安全共享
+  - 结果回写：可选 `--write-back`，调用 HTTP 接口回写 customer_id/task_id/mid/level/update_time
+  - 线程安全：每个工作线程独立调用 HTTP 回写接口；BlogClassifier 可安全共享
   - 结果落盘：JSON 完整结果 + TSV 汇总 + 摘要文本
   - 稳定性指标：成功率、P50/P95/P99 延迟、吞吐（条/秒）
 
@@ -83,14 +83,14 @@ def percentile(values: List[float], p: float) -> float:
 def process_one(
     record: MidRecord,
     classifier: BlogClassifier,
-    mysql_cfg: Dict,
+    config: Dict,
     write_back: bool,
 ) -> Dict:
     """
-    处理单条记录：分类 + 可选回写。
+    处理单条记录：分类 + 可选 HTTP 回写。
 
-    每个任务独立创建 MySQL 连接，避免连接跨线程使用。
-    """
+    每个任务独立调用 HTTP 结果回写接口，避免连接跨线程使用。
+"""
     mid = record.mid
     uid = record.mid_uid
 
@@ -103,18 +103,13 @@ def process_one(
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         if write_back:
-            repo = MySQLTaskRepository(mysql_cfg)
-            with repo.connect() as conn:
-                try:
-                    repo.update_level_result(conn, record, result)
-                except Exception as write_exc:
-                    # 结果回写失败，再次尝试写入失败字段
-                    try:
-                        repo.update_record_failure(conn, record, f"结果回写失败: {write_exc}")
-                    except Exception:
-                        pass
-                    result.success = False
-                    result.error = f"结果回写失败: {write_exc}"
+            repo = MySQLTaskRepository(config.get("mysql", {}), app_config=config)
+            try:
+                # conn 参数已废弃，实际通过 HTTP 接口回写
+                repo.update_level_result(None, record, result)
+            except Exception as write_exc:
+                result.success = False
+                result.error = f"结果回写失败: {write_exc}"
 
         return {
             "row_id": record.id,
@@ -135,13 +130,8 @@ def process_one(
         elapsed_ms = (time.perf_counter() - t0) * 1000
         error_msg = f"异常: {str(e)}"
 
-        if write_back:
-            try:
-                repo = MySQLTaskRepository(mysql_cfg)
-                with repo.connect() as conn:
-                    repo.update_record_failure(conn, record, error_msg)
-            except Exception:
-                pass
+        # 异常失败不再调用结果回写接口，仅记录到 error.log
+        # 失败信息由 Pipeline/脚本统一写入 logs/YYYYMMDD_error.log
 
         return {
             "row_id": record.id,
@@ -195,7 +185,7 @@ def print_summary(
         f"运行时间:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"数据来源:     {table_name} (level=0)",
         f"并发数:       {workers}",
-        f"回写数据库:   {'是' if write_back else '否'}",
+        f"HTTP 回写:    {'是' if write_back else '否'}",
         f"总条数:       {total}",
         f"成功:         {success_count}  ({success_rate:.1f}%)",
         f"失败:         {fail_count}  ({100 - success_rate:.1f}%)",
@@ -257,7 +247,7 @@ def main():
     parser.add_argument("--run-classify", action="store_true",
                         help="执行分类（默认只拉取预览）")
     parser.add_argument("--write-back", action="store_true",
-                        help="将结果回写到分表 level / level_time 字段（需配合 --run-classify）")
+                        help="将结果通过 HTTP 接口回写（需配合 --run-classify）")
     parser.add_argument("--video-mode", default="", choices=["", "cover", "frame"],
                         help="视频处理模式：cover（封面图）或 frame（OpenCV抽帧），空则使用配置")
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"),
@@ -279,7 +269,7 @@ def main():
     logger.info(f"customer_id 过滤: {args.customer_id if args.customer_id else '无'}")
     logger.info(f"并发数: {args.workers}")
     logger.info(f"执行分类: {args.run_classify}")
-    logger.info(f"回写数据库: {args.write_back}")
+    logger.info(f"HTTP 回写: {args.write_back}")
 
     # ── 加载配置 ──────────────────────────────────────────────
     import yaml
@@ -307,7 +297,7 @@ def main():
             sys.exit(1)
 
     # ── 拉取待处理记录 ────────────────────────────────────────
-    repo = MySQLTaskRepository(mysql_cfg, logger)
+    repo = MySQLTaskRepository(mysql_cfg, logger, app_config=config)
     with repo.connect() as conn:
         records = repo.fetch_pending_mids_by_table(
             conn,
@@ -339,7 +329,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         future_to_record = {
-            executor.submit(process_one, record, classifier, mysql_cfg, args.write_back): record
+            executor.submit(process_one, record, classifier, config, args.write_back): record
             for record in records
         }
 

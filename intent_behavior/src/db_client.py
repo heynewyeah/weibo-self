@@ -1,5 +1,5 @@
 """
-MySQL 分表任务消费与 level 回写实现。
+MySQL 分表任务消费与分类结果回写实现。
 
 核心职责：
 1. 连接 clue_collect_common 库
@@ -7,14 +7,16 @@ MySQL 分表任务消费与 level 回写实现。
 3. 根据 customer_id % 20 路由到 `nature_ad_super_mid_{shard}`
 4. 拉取 level=0 的待处理记录
 5. 映射为 BlogItem
-6. 将分类结果回写到分表 level / level_time
-7. 处理失败时回写错误字段，而不是只写日志
+6. 将分类结果通过 HTTP 接口回写到王燕威服务
+   （POST /api/v1/super-mid/update-level，含 customer_id/task_id/mid/level/update_time）
+7. 处理失败时记录错误日志，不再写回 MySQL 错误字段
 
 说明：
 - 当前开发环境通常仅有 `nature_ad_super_mid_1` 可用，因此代码默认做“表存在性检测”。
 - 为保证兼容性，优先使用 `pymysql`。若环境未安装，运行时会抛出明确错误。
 - `super_mid_task` 当前真实表结构不包含 `customer_id` 字段，因此支持从配置指定测试字段，
   也支持通过 join / mock / 扩展字段方式兼容测试阶段。
+- MySQL UPDATE 回写方式已废弃，统一改为 `result_writer` 配置的 HTTP 接口。
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import BlogItem, ClassifyResult
+from .result_writer import LevelUpdateClient
 
 
 logger = logging.getLogger(__name__)
@@ -94,10 +97,34 @@ class MidRecord:
 class MySQLTaskRepository:
     """MySQL 任务仓储。"""
 
-    def __init__(self, config: Dict[str, Any], logger_: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        logger_: Optional[logging.Logger] = None,
+        app_config: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Args:
+            config: mysql 配置段
+            logger_: 日志器
+            app_config: 完整应用配置（用于读取 result_writer 等平级配置）
+        """
         self.config = config
+        self.app_config = app_config or {}
         self.logger = logger_ or logging.getLogger(__name__)
         self._driver = None
+
+        # 初始化 HTTP 结果回写客户端（替代原 MySQL UPDATE）
+        self.writer: Optional[LevelUpdateClient] = None
+        writer_cfg = self.app_config.get("result_writer")
+        if writer_cfg and writer_cfg.get("url"):
+            self.writer = LevelUpdateClient(
+                url=writer_cfg["url"],
+                timeout=writer_cfg.get("timeout", 30),
+                max_retry=writer_cfg.get("max_retry", 3),
+                retry_backoff_base=writer_cfg.get("retry_backoff_base", 2.0),
+                logger_=self.logger,
+            )
 
     def _get_driver(self):
         if self._driver is not None:
@@ -251,56 +278,39 @@ class MySQLTaskRepository:
 
         return [self._row_to_mid_record(row) for row in rows]
 
-    def update_level_result(self, conn, record: MidRecord, result: ClassifyResult) -> None:
-        table = f"nature_ad_super_mid_{int(record.customer_id) % 20}"
-        if not self.table_exists(conn, table):
-            raise RuntimeError(f"回写失败，分表不存在: {table}")
-
-        level_value = LEVEL_MAPPING.get(result.layer, 0)
-        sql = f"""
-        UPDATE {table}
-        SET level = %s,
-            level_time = %s,
-            mtime = CURRENT_TIMESTAMP,
-            transfer_score_error_code = %s,
-            transfer_score_error_detail = %s
-        WHERE id = %s
+    def update_level_result(self, conn, record: MidRecord, result: ClassifyResult) -> Any:
         """
-        error_code = 0 if result.success else 1
-        error_detail = "" if result.success else (result.error or result.model_output or "分类失败")[:300]
-        with conn.cursor() as cur:
-            cur.execute(sql, (level_value, datetime.now(), error_code, error_detail, record.id))
-        self.logger.info(
-            "回写成功 table=%s id=%s mid=%s layer=%s(%s) success=%s",
-            table,
-            record.id,
-            record.mid,
-            result.layer,
-            level_value,
-            result.success,
+        将分类结果回写到 HTTP 接口（替代原 MySQL UPDATE）。
+
+        Args:
+            conn: 保留参数以兼容旧调用，实际不再使用
+        """
+        if self.writer is None:
+            raise RuntimeError(
+                "result_writer 未配置，无法回写结果。请在 config.yaml 中配置 result_writer.url"
+            )
+
+        return self.writer.update_level_from_result(
+            customer_id=record.customer_id,
+            task_id=record.super_task_id,
+            mid=record.mid,
+            layer=result.layer,
+            update_time=datetime.now().isoformat(),
         )
 
     def update_record_failure(self, conn, record: MidRecord, error_msg: str) -> None:
-        table = f"nature_ad_super_mid_{int(record.customer_id) % 20}"
-        if not self.table_exists(conn, table):
-            raise RuntimeError(f"失败回写失败，分表不存在: {table}")
-
-        sql = f"""
-        UPDATE {table}
-        SET transfer_score_error_code = %s,
-            transfer_score_error_detail = %s,
-            mtime = CURRENT_TIMESTAMP
-        WHERE id = %s
         """
-        error_detail = (error_msg or "未知异常")[:300]
-        with conn.cursor() as cur:
-            cur.execute(sql, (1, error_detail, record.id))
+        记录处理失败信息到日志（原 MySQL 错误字段回写已废弃）。
+
+        Args:
+            conn: 保留参数以兼容旧调用，实际不再使用
+        """
         self.logger.warning(
-            "失败回写完成 table=%s id=%s mid=%s error=%s",
-            table,
-            record.id,
+            "记录处理失败（未调用结果回写接口） mid=%s customer_id=%s task_id=%s error=%s",
             record.mid,
-            error_detail,
+            record.customer_id,
+            record.super_task_id,
+            (error_msg or "未知异常")[:300],
         )
 
     def _row_to_mid_record(self, row: Dict[str, Any]) -> MidRecord:

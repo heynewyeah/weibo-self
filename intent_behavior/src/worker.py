@@ -5,9 +5,10 @@ MySQL 分表持续消费 worker。
 1. 查询 `super_mid_task` 中有效任务
 2. 动态路由到 `nature_ad_super_mid_{customer_id % 20}`
 3. 拉取 `level=0` 的待分类 mid
-4. 调用 `BlogClassifier.classify_item()`
-5. 将结果回写到分表 `level` / `level_time`
-6. 异常场景回写错误字段，而不是仅日志记录
+4. 调用 `BlogClassifier.classify_item()` 进行图文视频分类
+5. 将分类结果通过 HTTP 接口回写到王燕威服务
+   （POST /api/v1/super-mid/update-level，含 customer_id/task_id/mid/level/update_time）
+6. 异常场景记录错误日志，不再写回 MySQL 错误字段
 
 当前实现为单进程串行版本，优先保证：
 - 路由正确
@@ -44,7 +45,7 @@ class MySQLShardWorker:
         self.worker_cfg = config.get("worker", {})
         self.mysql_cfg = config.get("mysql", {})
         self.logger = logger or logging.getLogger(__name__)
-        self.repo = MySQLTaskRepository(self.mysql_cfg, self.logger)
+        self.repo = MySQLTaskRepository(self.mysql_cfg, self.logger, app_config=config)
         self.classifier = BlogClassifier(config, self.logger)
         self.stats = WorkerStats()
 

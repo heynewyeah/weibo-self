@@ -7,7 +7,8 @@ nature_ad_super_mid_x 测试脚本。
 2. 直接读取指定分表，检查文本 / 图片 / 视频测试样例是否存在。
 3. 将分表记录映射为 `BlogItem`，验证字段适配是否正确。
 4. 可选调用 `BlogClassifier.classify_item()` 对单条或多条分表样例进行分类验证。
-5. 分类验证成功后，把结果回写到分表的 `level` 和 `level_time`。
+5. 分类验证成功后，通过 HTTP 接口把结果回写到王燕威服务
+   （POST /api/v1/super-mid/update-level，含 customer_id/task_id/mid/level/update_time）。
 
 运行示例：
   python3 tests/07_mysql_worker/test_nature_ad_super_mid.py --table nature_ad_super_mid_1 --limit 10
@@ -50,7 +51,7 @@ def main():
     parser.add_argument("--table", default="nature_ad_super_mid_1", help="要验证的分表名")
     parser.add_argument("--limit", type=int, default=10, help="最多读取多少条记录")
     parser.add_argument("--run-classify", action="store_true", help="是否对读取结果直接执行分类")
-    parser.add_argument("--write-back", action="store_true", help="是否把分类结果回写到 level / level_time")
+    parser.add_argument("--write-back", action="store_true", help="是否把分类结果通过 HTTP 接口回写")
     parser.add_argument("--only-level-zero", action="store_true", help="只处理 level=0 的记录")
     args = parser.parse_args()
 
@@ -61,7 +62,7 @@ def main():
         level=config.get("logging", {}).get("level", "INFO"),
     )
 
-    repo = MySQLTaskRepository(config.get("mysql", {}), logger)
+    repo = MySQLTaskRepository(config.get("mysql", {}), logger, app_config=config)
     classifier = BlogClassifier(config, logger) if args.run_classify else None
 
     with repo.connect() as conn:
@@ -110,7 +111,8 @@ def main():
 
                 if args.write_back:
                     try:
-                        repo.update_level_result(conn, record, result)
+                        # conn 参数已废弃，实际通过 HTTP 接口回写
+                        repo.update_level_result(None, record, result)
                         print(f"    write_back => level={result.layer}")
                         success_count += 1 if result.success else 0
                         fail_count += 0 if result.success else 1

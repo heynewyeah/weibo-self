@@ -8,7 +8,7 @@
 2. 媒体类型判定（text / image / video / auto）
 3. 调用分类器
 4. 临时文件清理
-5. 结果回写（可选）
+5. 结果回写（可选，HTTP 接口 POST /api/v1/super-mid/update-level）
 6. 结构化计时与错误记录
 
 设计原则：
@@ -133,7 +133,7 @@ class ClassifyPipeline:
         self.repo: Optional[MySQLTaskRepository] = None
         mysql_cfg = config.get("mysql")
         if mysql_cfg:
-            self.repo = MySQLTaskRepository(mysql_cfg, self.logger)
+            self.repo = MySQLTaskRepository(mysql_cfg, self.logger, app_config=config)
 
     def process_one(
         self,
@@ -154,8 +154,8 @@ class ClassifyPipeline:
                   - "text": 强制按文本分类
                   - "image": 强制按图片分类（反解无图则失败）
                   - "video": 强制按视频分类（反解无视频则失败）
-            write_back: 是否回写 MySQL（需传入 record）
-            record: MySQL 分表记录（write_back=True 时使用）
+            write_back: 是否通过 HTTP 接口回写结果（需传入 record）
+            record: MySQL 分表记录（write_back=True 时使用，需要 customer_id/task_id/mid）
 
         Returns:
             ProcessResult
@@ -222,12 +222,12 @@ class ClassifyPipeline:
                 result.error_stage = "classify"
                 raise RuntimeError(classify_result.error or "分类器返回失败")
 
-            # ── 阶段 3：结果回写（可选）───────────────────────────
+            # ── 阶段 3：结果回写（可选，HTTP 接口）──────────────────
             if write_back and record is not None and self.repo is not None:
                 t_writeback_start = time.perf_counter()
                 try:
-                    with self.repo.connect() as conn:
-                        self.repo.update_level_result(conn, record, classify_result)
+                    # conn 参数已废弃，保留仅为了兼容旧签名；实际通过 HTTP 回写
+                    self.repo.update_level_result(None, record, classify_result)
                 except Exception as e:
                     result.error = f"回写失败: {str(e)}"
                     result.error_stage = "writeback"
@@ -273,14 +273,14 @@ class ClassifyPipeline:
         Args:
             inputs: 输入列表，每个元素是 dict，必须包含 "mid"，可选 "uid"
             mode: 处理模式
-            write_back: 是否回写（当前仅支持单线程 + 传入完整 record）
+            write_back: 是否通过 HTTP 接口回写结果（当前仅支持单线程 + 传入完整 record）
             workers: 并发数（>1 时 write_back 必须为 False）
 
         Returns:
             ProcessResult 列表
         """
         if workers > 1 and write_back:
-            raise ValueError("并发模式暂不支持 MySQL 回写，请 workers=1 或 write_back=False")
+            raise ValueError("并发模式暂不支持结果回写，请 workers=1 或 write_back=False")
 
         results: List[ProcessResult] = []
         total = len(inputs)

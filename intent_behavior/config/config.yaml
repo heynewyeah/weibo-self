@@ -204,3 +204,11 @@ mid_resolver:
   timeout: 30
   max_retry: 3
   parse_component: 1
+
+# 分类结果回写接口配置
+# 由王燕威提供，替代原 MySQL UPDATE 方式
+result_writer:
+  url: "http://10.133.6.162:8058/api/v1/super-mid/update-level"
+  timeout: 30
+  max_retry: 3
+  retry_backoff_base: 2.0
