@@ -2,10 +2,11 @@
 """
 正式分类运行入口
 ================
-生产环境主脚本，支持三种输入源：
+生产环境主脚本，支持四种输入源：
   1. 单条：--mid + --uid
   2. 批量文件：--input-file（JSONL/TSV）
-  3. MySQL 分表：--shard-index + --customer-id + --limit
+  3. MySQL 任务驱动：--from-tasks + --limit（查询 super_mid_task → 路由到 nature_ad_super_mid_x）
+  4. MySQL 分表直读：--shard-index + --customer-id + --limit
 
 支持三种处理模式：
   - text / image / video：强制按指定类型处理
@@ -24,7 +25,12 @@
   # 批量文件（JSONL）
   python3 run_classification.py --input-file data/input.jsonl --workers 5
 
-  # MySQL 分表 level=0 数据（自动判断类型 + HTTP 回写）
+  # MySQL 任务驱动：自动查询 super_mid_task 有效任务，路由到分表，最多处理 100 条并回写
+  python3 run_classification.py \
+      --from-tasks --limit 100 \
+      --mode auto --write-back
+
+  # MySQL 分表直读：直接读取 nature_ad_super_mid_1 的 level=0 数据
   python3 run_classification.py \
       --shard-index 1 --customer-id 2608812381 --limit 100 \
       --mode auto --write-back
@@ -133,6 +139,62 @@ def load_from_mysql(
     return inputs
 
 
+def load_from_tasks(
+    repo: MySQLTaskRepository,
+    config: Dict[str, Any],
+    total_limit: int = 0,
+    per_task_limit: int = 0,
+    logger: logging.Logger = None,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    从 super_mid_task 查询有效任务，按 customer_id 路由到分表读取 level=0 记录。
+
+    Returns:
+        (inputs, data_source_description)
+    """
+    worker_cfg = config.get("worker", {})
+    active_task_limit = int(worker_cfg.get("active_task_limit", 50))
+    if per_task_limit <= 0:
+        per_task_limit = int(worker_cfg.get("fetch_limit_per_task", 100))
+
+    inputs: List[Dict[str, Any]] = []
+    task_summaries = []
+
+    with repo.connect() as conn:
+        tasks = repo.fetch_active_tasks(conn, limit=active_task_limit)
+        if logger:
+            logger.info(f"从 super_mid_task 查询到 {len(tasks)} 个有效任务")
+
+        for task in tasks:
+            if total_limit > 0 and len(inputs) >= total_limit:
+                break
+
+            remaining = total_limit - len(inputs) if total_limit > 0 else per_task_limit
+            fetch_limit = min(per_task_limit, remaining) if total_limit > 0 else per_task_limit
+
+            records = repo.fetch_pending_mids(conn, task, limit=fetch_limit, only_level_zero=True)
+            for record in records:
+                inputs.append({
+                    "mid": record.mid,
+                    "uid": record.mid_uid,
+                    "record": record,
+                })
+                if total_limit > 0 and len(inputs) >= total_limit:
+                    break
+
+            task_summaries.append(f"{task.shard_table}(task_id={task.task_id}): {len(records)} 条")
+            if logger:
+                logger.info(
+                    f"任务 task_id={task.task_id} customer_id={task.customer_id} "
+                    f"shard={task.shard_table} 读取 {len(records)} 条"
+                )
+
+    data_source = "mysql:tasks -> " + "; ".join(task_summaries) if task_summaries else "mysql:tasks"
+    if logger:
+        logger.info(f"任务驱动模式共读取 {len(inputs)} 条 level=0 记录")
+    return inputs, data_source
+
+
 # ── 摘要 ──────────────────────────────────────────────────────
 def percentile(values: List[float], p: float) -> float:
     if not values:
@@ -239,12 +301,16 @@ def main():
     parser.add_argument("--uid", default="", help="单条处理：博文作者 uid")
     parser.add_argument("--input-file", default="",
                         help="批量处理：本地 JSONL/TSV 文件路径")
+    parser.add_argument("--from-tasks", action="store_true",
+                        help="MySQL 输入：从 super_mid_task 查询任务并路由到 nature_ad_super_mid_x")
     parser.add_argument("--shard-index", type=int, default=0,
-                        help="MySQL 输入：分表索引，如 1 表示 nature_ad_super_mid_1")
+                        help="MySQL 输入：直接读取指定分表索引，如 1 表示 nature_ad_super_mid_1")
     parser.add_argument("--customer-id", type=int, default=None,
-                        help="MySQL 输入：按 customer_id 过滤")
+                        help="MySQL 输入：按 customer_id 过滤（仅 --shard-index 模式有效）")
     parser.add_argument("--limit", type=int, default=0,
-                        help="限制处理条数（0=不限制）")
+                        help="限制总处理条数（0=不限制）")
+    parser.add_argument("--limit-per-task", type=int, default=0,
+                        help="任务驱动模式下每个任务最多读取条数（0=使用 worker.fetch_limit_per_task）")
 
     # 处理模式
     parser.add_argument("--mode", default="auto", choices=["auto", "text", "image", "video"],
@@ -312,12 +378,26 @@ def main():
         inputs = load_input_file(args.input_file)
         data_source = f"file:{args.input_file}"
         logger.info(f"从文件加载 {len(inputs)} 条记录")
+    elif args.from_tasks:
+        mysql_cfg = config.get("mysql")
+        if not mysql_cfg:
+            logger.error("配置中缺少 mysql 段")
+            sys.exit(1)
+        # 必须传入 app_config，否则 result_writer 不会初始化
+        repo = MySQLTaskRepository(mysql_cfg, logger, app_config=config)
+        inputs, data_source = load_from_tasks(
+            repo,
+            config,
+            total_limit=args.limit,
+            per_task_limit=args.limit_per_task,
+            logger=logger,
+        )
     elif args.shard_index > 0:
         mysql_cfg = config.get("mysql")
         if not mysql_cfg:
             logger.error("配置中缺少 mysql 段")
             sys.exit(1)
-        repo = MySQLTaskRepository(mysql_cfg, logger)
+        repo = MySQLTaskRepository(mysql_cfg, logger, app_config=config)
         table_name = f"{mysql_cfg.get('shard_table_prefix', 'nature_ad_super_mid_')}{args.shard_index}"
         inputs = load_from_mysql(
             repo, table_name,
@@ -327,7 +407,7 @@ def main():
         )
         data_source = f"mysql:{table_name}"
     else:
-        logger.error("必须指定输入源：--mid / --input-file / --shard-index")
+        logger.error("必须指定输入源：--mid / --input-file / --from-tasks / --shard-index")
         parser.print_help()
         sys.exit(1)
 
