@@ -2,38 +2,19 @@
 """
 分类结果回写客户端
 ==================
-将分类结果（level）通过 HTTP POST 回写到王燕威提供的接口：
-
-    POST /api/v1/super-mid/update-level
-    Body: {
-        "customer_id": 2608812381,
-        "task_id": 1296890022120652801,
-        "mid": 5239425780940868,
-        "level": 1
-    }
-
-替代原来的 MySQL UPDATE 方式。
+将分类结果（level）通过 HTTP POST 回写到王燕威提供的接口。
 """
 
 from __future__ import annotations
 
 import time
 import logging
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 import requests
 
 
 logger = logging.getLogger(__name__)
-
-
-LEVEL_MAPPING = {
-    "认知层": 1,
-    "兴趣层": 2,
-    "考虑层": 3,
-    "未识别": 0,
-}
 
 
 class LevelUpdateClient:
@@ -47,13 +28,6 @@ class LevelUpdateClient:
         retry_backoff_base: float = 2.0,
         logger_: Optional[logging.Logger] = None,
     ):
-        """
-        Args:
-            url: 完整接口地址，如 http://10.133.6.162:8058/api/v1/super-mid/update-level
-            timeout: 单次请求超时（秒）
-            max_retry: 最大重试次数
-            retry_backoff_base: 重试间隔底数
-        """
         self.url = url
         self.timeout = timeout
         self.max_retry = max_retry
@@ -68,22 +42,6 @@ class LevelUpdateClient:
         level: int,
         update_time: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        回写单条分类结果。
-
-        Args:
-            customer_id: 客户ID
-            task_id: 任务ID（对应 super_task_id）
-            mid: 博文 mid
-            level: 层级数值 0/1/2/3
-            update_time: 更新时间 ISO 格式（可选，默认当前时间）
-
-        Returns:
-            接口响应 JSON
-
-        Raises:
-            RuntimeError: 接口调用失败
-        """
         payload: Dict[str, Any] = {
             "customer_id": int(customer_id),
             "task_id": int(task_id),
@@ -126,23 +84,3 @@ class LevelUpdateClient:
                 time.sleep(sleep_sec)
 
         raise RuntimeError(f"[LevelUpdate] 回写失败 mid={mid}: {last_error}")
-
-    def update_level_from_result(
-        self,
-        customer_id: int,
-        task_id: int,
-        mid: str,
-        layer: str,
-        update_time: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        从层级名称（如"认知层"）转换为数值后回写。
-        """
-        level_value = LEVEL_MAPPING.get(layer, 0)
-        return self.update_level(
-            customer_id=customer_id,
-            task_id=task_id,
-            mid=mid,
-            level=level_value,
-            update_time=update_time,
-        )

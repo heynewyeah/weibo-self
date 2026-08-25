@@ -6,17 +6,10 @@ MySQL 分表任务消费与分类结果回写实现。
 2. 查询 `super_mid_task` 中有效任务
 3. 根据 customer_id % 20 路由到 `nature_ad_super_mid_{shard}`
 4. 拉取 level=0 的待处理记录
-5. 映射为 BlogItem
+5. 解析行业 / 品牌标签、转发字段，并映射为 BlogItem
 6. 将分类结果通过 HTTP 接口回写到王燕威服务
    （POST /api/v1/super-mid/update-level，含 customer_id/task_id/mid/level/update_time）
 7. 处理失败时记录错误日志，不再写回 MySQL 错误字段
-
-说明：
-- 当前开发环境通常仅有 `nature_ad_super_mid_1` 可用，因此代码默认做“表存在性检测”。
-- 为保证兼容性，优先使用 `pymysql`。若环境未安装，运行时会抛出明确错误。
-- `super_mid_task` 当前真实表结构不包含 `customer_id` 字段，因此支持从配置指定测试字段，
-  也支持通过 join / mock / 扩展字段方式兼容测试阶段。
-- MySQL UPDATE 回写方式已废弃，统一改为 `result_writer` 配置的 HTTP 接口。
 """
 
 from __future__ import annotations
@@ -24,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -33,14 +26,6 @@ from .result_writer import LevelUpdateClient
 
 
 logger = logging.getLogger(__name__)
-
-
-LEVEL_MAPPING = {
-    "认知层": 1,
-    "兴趣层": 2,
-    "考虑层": 3,
-    "未识别": 0,
-}
 
 
 @dataclass
@@ -52,7 +37,12 @@ class TaskRecord:
     customer_id: int
     task_type: int
     exec_status: int
-    raw: Dict[str, Any]
+    industry_tag_raw: str = ""
+    brand_tag_raw: str = ""
+    industry_values: List[str] = field(default_factory=list)
+    brand_values: List[str] = field(default_factory=list)
+    industry_name: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def shard_index(self) -> int:
@@ -75,8 +65,16 @@ class MidRecord:
     mid_text: str
     mid_pids: str
     mid_fids: str
-    level: int
-    raw: Dict[str, Any]
+    forward_mid: str = ""
+    forward_text: str = ""
+    level: int = 0
+    task_industry_name: str = ""
+    task_brand_values: List[str] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def has_forward(self) -> bool:
+        value = str(self.forward_mid or "").strip()
+        return value not in {"", "0", "None", "null"}
 
     def to_blog_item(self) -> BlogItem:
         return BlogItem(
@@ -85,11 +83,16 @@ class MidRecord:
             content=self.mid_text or "",
             pic_ids=_parse_media_ids(self.mid_pids),
             media_ids=_parse_media_ids(self.mid_fids),
+            industry_name=self.task_industry_name,
+            brand_values=list(self.task_brand_values),
+            forward_mid=str(self.forward_mid or ""),
+            forward_content=self.forward_text or "",
             extra={
                 "row_id": self.id,
                 "customer_id": self.customer_id,
                 "super_task_id": self.super_task_id,
                 "source": "mysql_shard",
+                "has_forward": self.has_forward(),
             },
         )
 
@@ -103,18 +106,11 @@ class MySQLTaskRepository:
         logger_: Optional[logging.Logger] = None,
         app_config: Optional[Dict[str, Any]] = None,
     ):
-        """
-        Args:
-            config: mysql 配置段
-            logger_: 日志器
-            app_config: 完整应用配置（用于读取 result_writer 等平级配置）
-        """
         self.config = config
         self.app_config = app_config or {}
         self.logger = logger_ or logging.getLogger(__name__)
         self._driver = None
 
-        # 初始化 HTTP 结果回写客户端（替代原 MySQL UPDATE）
         self.writer: Optional[LevelUpdateClient] = None
         writer_cfg = self.app_config.get("result_writer")
         if writer_cfg and writer_cfg.get("url"):
@@ -125,6 +121,13 @@ class MySQLTaskRepository:
                 retry_backoff_base=writer_cfg.get("retry_backoff_base", 2.0),
                 logger_=self.logger,
             )
+
+        cls_cfg = self.app_config.get("classification", {})
+        self.supported_industries = set(cls_cfg.get("supported_industries", []))
+        self.default_industry = cls_cfg.get("default_industry", "汽车")
+        self.pending_level = int(cls_cfg.get("pending_level", 0))
+        self.failure_label = cls_cfg.get("failure_label", "未识别")
+        self.industry_rules = cls_cfg.get("industry_rules", {})
 
     def _get_driver(self):
         if self._driver is not None:
@@ -171,24 +174,31 @@ class MySQLTaskRepository:
 
     def fetch_active_tasks(self, conn, limit: int = 100) -> List[TaskRecord]:
         table = self.config.get("task_table", "super_mid_task")
+        task_type = int(self.config.get("active_task_type", 1))
+        exec_status_done = int(self.config.get("inactive_exec_status", 5))
+        end_time_field = self.config.get("task_end_time_field", "end_time")
+
         sql = f"""
         SELECT *
         FROM {table}
         WHERE task_type = %s
-          AND exec_status != %s
+          AND (
+                exec_status != %s
+                OR (exec_status = %s AND {end_time_field} < DATE_SUB(NOW(), INTERVAL 1 DAY))
+              )
         ORDER BY id ASC
         LIMIT %s
         """
-        task_type = int(self.config.get("active_task_type", 1))
-        exec_status_done = int(self.config.get("inactive_exec_status", 5))
 
         with conn.cursor() as cur:
-            cur.execute(sql, (task_type, exec_status_done, limit))
+            cur.execute(sql, (task_type, exec_status_done, exec_status_done, limit))
             rows = cur.fetchall() or []
 
         tasks: List[TaskRecord] = []
         customer_field = self.config.get("task_customer_id_field", "customer_id")
         task_id_field = self.config.get("task_id_field", "task_id")
+        industry_tag_field = self.config.get("task_industry_tag_field", "industry_tag")
+        brand_tag_field = self.config.get("task_brand_tag_field", "brand_tag")
         fallback_customer_id = int(self.config.get("test_customer_id", 0) or 0)
 
         for row in rows:
@@ -199,6 +209,22 @@ class MySQLTaskRepository:
                     row.get("id"),
                 )
                 continue
+
+            industry_tag_raw = str(row.get(industry_tag_field, "") or "")
+            brand_tag_raw = str(row.get(brand_tag_field, "") or "")
+            industry_values = parse_tag_json_values(industry_tag_raw)
+            brand_values = parse_tag_json_values(brand_tag_raw)
+            industry_name = self.resolve_industry(industry_values)
+
+            if not industry_name:
+                self.logger.warning(
+                    "任务未命中支持行业，跳过: id=%s task_id=%s industry_values=%s",
+                    row.get("id"),
+                    row.get(task_id_field),
+                    industry_values,
+                )
+                continue
+
             tasks.append(
                 TaskRecord(
                     id=int(row.get("id", 0)),
@@ -206,6 +232,11 @@ class MySQLTaskRepository:
                     customer_id=customer_id,
                     task_type=int(row.get("task_type", 0) or 0),
                     exec_status=int(row.get("exec_status", 0) or 0),
+                    industry_tag_raw=industry_tag_raw,
+                    brand_tag_raw=brand_tag_raw,
+                    industry_values=industry_values,
+                    brand_values=brand_values,
+                    industry_name=industry_name,
                     raw=row,
                 )
             )
@@ -225,7 +256,7 @@ class MySQLTaskRepository:
 
         task_match_field = self.config.get("shard_task_match_field", "super_task_id")
         task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
-        level_cond = "AND level = 0" if only_level_zero else ""
+        level_cond = f"AND level = {self.pending_level}" if only_level_zero else ""
         sql = f"""
         SELECT *
         FROM {table}
@@ -239,7 +270,7 @@ class MySQLTaskRepository:
             cur.execute(sql, (task.customer_id, task_match_value, limit))
             rows = cur.fetchall() or []
 
-        return [self._row_to_mid_record(row) for row in rows]
+        return [self._row_to_mid_record(row, task=task) for row in rows]
 
     def fetch_pending_mids_by_table(
         self,
@@ -248,17 +279,13 @@ class MySQLTaskRepository:
         customer_id: Optional[int] = None,
         limit: int = 100,
         only_level_zero: bool = True,
+        task: Optional[TaskRecord] = None,
     ) -> List[MidRecord]:
-        """
-        直接按分表名拉取待处理记录，不依赖 super_mid_task。
-
-        适用于测试阶段直接消费某张分表中的 level=0 数据。
-        """
         if not self.table_exists(conn, table_name):
             self.logger.warning("分表不存在，跳过: %s", table_name)
             return []
 
-        level_cond = "WHERE level = 0" if only_level_zero else "WHERE 1=1"
+        level_cond = f"WHERE level = {self.pending_level}" if only_level_zero else "WHERE 1=1"
         params: List[Any] = []
         if customer_id is not None:
             level_cond += " AND customer_id = %s"
@@ -276,35 +303,24 @@ class MySQLTaskRepository:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall() or []
 
-        return [self._row_to_mid_record(row) for row in rows]
+        return [self._row_to_mid_record(row, task=task) for row in rows]
 
     def update_level_result(self, conn, record: MidRecord, result: ClassifyResult) -> Any:
-        """
-        将分类结果回写到 HTTP 接口（替代原 MySQL UPDATE）。
-
-        Args:
-            conn: 保留参数以兼容旧调用，实际不再使用
-        """
         if self.writer is None:
             raise RuntimeError(
                 "result_writer 未配置，无法回写结果。请在 config.yaml 中配置 result_writer.url"
             )
 
-        return self.writer.update_level_from_result(
+        level = self.get_level_code(record.task_industry_name or result.industry_name, result.layer)
+        return self.writer.update_level(
             customer_id=record.customer_id,
             task_id=record.super_task_id,
             mid=record.mid,
-            layer=result.layer,
+            level=level,
             update_time=datetime.now().isoformat(),
         )
 
     def update_record_failure(self, conn, record: MidRecord, error_msg: str) -> None:
-        """
-        记录处理失败信息到日志（原 MySQL 错误字段回写已废弃）。
-
-        Args:
-            conn: 保留参数以兼容旧调用，实际不再使用
-        """
         self.logger.warning(
             "记录处理失败（未调用结果回写接口） mid=%s customer_id=%s task_id=%s error=%s",
             record.mid,
@@ -313,7 +329,22 @@ class MySQLTaskRepository:
             (error_msg or "未知异常")[:300],
         )
 
-    def _row_to_mid_record(self, row: Dict[str, Any]) -> MidRecord:
+    def resolve_industry(self, industry_values: List[str]) -> str:
+        for value in industry_values:
+            if value in self.supported_industries:
+                return value
+        return self.default_industry if self.default_industry in self.supported_industries else ""
+
+    def get_level_code(self, industry_name: str, layer: str) -> int:
+        rules = self.industry_rules.get(industry_name or self.default_industry, {})
+        mapping = rules.get("level_mapping", {})
+        if layer in mapping:
+            return int(mapping[layer])
+        return self.pending_level
+
+    def _row_to_mid_record(self, row: Dict[str, Any], task: Optional[TaskRecord] = None) -> MidRecord:
+        forward_mid_field = self.config.get("shard_forward_mid_field", "forward_mid")
+        forward_text_field = self.config.get("shard_forward_text_field", "forward_text")
         return MidRecord(
             id=int(row.get("id", 0)),
             customer_id=int(row.get("customer_id", 0)),
@@ -323,9 +354,41 @@ class MySQLTaskRepository:
             mid_text=str(row.get("mid_text", "") or ""),
             mid_pids=str(row.get("mid_pids", "") or ""),
             mid_fids=str(row.get("mid_fids", "") or ""),
+            forward_mid=str(row.get(forward_mid_field, "") or ""),
+            forward_text=str(row.get(forward_text_field, "") or ""),
             level=int(row.get("level", 0) or 0),
+            task_industry_name=task.industry_name if task else "",
+            task_brand_values=list(task.brand_values) if task else [],
             raw=row,
         )
+
+
+def parse_tag_json_values(raw: str) -> List[str]:
+    """解析 industry_tag / brand_tag 的 JSON map，只取 value。"""
+    if not raw:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            values = []
+            for value in data.values():
+                text_value = str(value).strip()
+                if text_value and text_value not in values:
+                    values.append(text_value)
+            return values
+        if isinstance(data, list):
+            values = []
+            for value in data:
+                text_value = str(value).strip()
+                if text_value and text_value not in values:
+                    values.append(text_value)
+            return values
+    except json.JSONDecodeError:
+        pass
+    return []
 
 
 def _parse_media_ids(raw: str) -> List[str]:

@@ -4,33 +4,6 @@
 ===================
 调用微博内部接口 `http://terra.biz.weibo.com/mid/media`，
 通过博文 mid 反解出正文、图片 pid 列表、视频 fid/cover/url 等真实内容。
-
-为什么需要：
-- MySQL 分表（nature_ad_super_mid_x）里的 mid_pids / mid_fids 字段有时和实际请求 API 所需不匹配。
-- 通过 mid 反解可以拿到当前最新、最准确的博文内容。
-
-接口文档：
-  intent_behavior/博文mid反解-接口wiki.docx
-
-典型返回结构：
-{
-  "code": 0,
-  "result": {
-    "mid": "4876329553760906",
-    "data": {
-      "images": ["pid1", "pid2"],
-      "video": {
-        "source": 1,
-        "cover": "http://...",
-        "url": null,
-        "fid": "2362904:4828110227701817"
-      },
-      "content": {"actual_content": "..."}
-    },
-    "is_retweeted": false
-  },
-  "message": "SUCCESS"
-}
 """
 
 from __future__ import annotations
@@ -45,8 +18,6 @@ from .models import BlogItem
 
 
 logger = logging.getLogger(__name__)
-
-
 DEFAULT_RESOLVER_URL = "http://terra.biz.weibo.com/mid/media"
 
 
@@ -62,6 +33,8 @@ class ResolvedBlog:
     video_cover_url: str = ""
     video_url: Optional[str] = None
     is_retweeted: bool = False
+    forward_mid: str = ""
+    forward_content: str = ""
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def has_image(self) -> bool:
@@ -70,14 +43,19 @@ class ResolvedBlog:
     def has_video(self) -> bool:
         return bool(self.video_fid)
 
+    def has_forward(self) -> bool:
+        value = str(self.forward_mid or "").strip()
+        return value not in {"", "0", "None", "null"}
+
     def to_blog_item(self) -> BlogItem:
-        """转换为内部 BlogItem，供分类器使用"""
         return BlogItem(
             mid=str(self.mid),
             uid=str(self.uid or ""),
             content=self.content or "",
             pic_ids=list(self.pic_ids),
             media_ids=[self.video_fid] if self.video_fid else [],
+            forward_mid=str(self.forward_mid or ""),
+            forward_content=self.forward_content or "",
             extra={
                 "source": "mid_resolver",
                 "is_retweeted": self.is_retweeted,
@@ -97,6 +75,8 @@ class ResolvedBlog:
             "video_cover_url": self.video_cover_url,
             "video_url": self.video_url,
             "is_retweeted": self.is_retweeted,
+            "forward_mid": self.forward_mid,
+            "forward_content": self.forward_content,
         }
 
 
@@ -122,21 +102,6 @@ class MidResolverClient:
         parse_component: int = 1,
         obj_type: Optional[int] = None,
     ) -> ResolvedBlog:
-        """
-        通过 mid 反解博文内容。
-
-        Args:
-            mid: 博文 mid
-            uid: 博文作者 uid（可选，建议传入以提高命中率）
-            parse_component: 是否解析组件，1=解析，0=不解析
-            obj_type: 是否解析标的信息，1=解析，0=不解析
-
-        Returns:
-            ResolvedBlog 对象
-
-        Raises:
-            RuntimeError: 接口返回非 0 或请求失败
-        """
         params: Dict[str, Any] = {
             "mid": mid,
             "parse_component": parse_component,
@@ -175,7 +140,6 @@ class MidResolverClient:
         raise RuntimeError(f"[MidResolver] 反解失败 mid={mid}: {last_error}")
 
     def _parse_response(self, mid: str, uid: Optional[str], data: Dict[str, Any]) -> ResolvedBlog:
-        """解析反解接口响应"""
         code = data.get("code")
         if code != 0:
             msg = data.get("message", "未知错误")
@@ -185,7 +149,6 @@ class MidResolverClient:
         result_mid = result.get("mid", mid)
         result_data = result.get("data", {}) or {}
 
-        # 正文
         content = ""
         content_obj = result_data.get("content")
         if isinstance(content_obj, dict):
@@ -193,13 +156,11 @@ class MidResolverClient:
         elif isinstance(content_obj, str):
             content = content_obj
 
-        # 图片 pid 列表
         pic_ids: List[str] = []
         images = result_data.get("images")
         if isinstance(images, list):
             pic_ids = [str(p).strip() for p in images if str(p).strip()]
 
-        # 视频信息
         video_fid = ""
         video_cover_url = ""
         video_url = None
@@ -211,6 +172,17 @@ class MidResolverClient:
 
         is_retweeted = bool(result.get("is_retweeted", False))
 
+        forward_mid = ""
+        forward_content = ""
+        retweeted_status = result_data.get("retweeted_status") or result.get("retweeted_status")
+        if isinstance(retweeted_status, dict):
+            forward_mid = str(retweeted_status.get("mid", "") or "")
+            forward_content_obj = retweeted_status.get("content") or retweeted_status.get("text")
+            if isinstance(forward_content_obj, dict):
+                forward_content = str(forward_content_obj.get("actual_content", "") or "")
+            else:
+                forward_content = str(forward_content_obj or "")
+
         return ResolvedBlog(
             mid=str(result_mid),
             uid=str(uid) if uid else None,
@@ -220,5 +192,7 @@ class MidResolverClient:
             video_cover_url=video_cover_url,
             video_url=video_url,
             is_retweeted=is_retweeted,
+            forward_mid=forward_mid,
+            forward_content=forward_content,
             raw=data,
         )
