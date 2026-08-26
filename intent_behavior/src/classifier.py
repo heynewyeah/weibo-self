@@ -57,8 +57,17 @@ class BlogClassifier:
         self.result_file = config["logging"].get("result_file", "output/result.tsv")
 
     def _resolve_industry(self, item: BlogItem) -> str:
+        """
+        解析行业名称。
+        - 如果 item.industry_name 在支持列表中，直接返回
+        - 否则返回 default_industry（兜底）
+        - 如果 item.industry_name 非空但不在支持列表中，返回空字符串（表示不支持）
+        """
         if item.industry_name and item.industry_name in self.supported_industries:
             return item.industry_name
+        if item.industry_name and item.industry_name not in self.supported_industries:
+            # 明确指定了行业但不在支持列表中 → 不支持
+            return ""
         return self.default_industry
 
     def _get_industry_rule(self, industry_name: str) -> Dict[str, Any]:
@@ -161,7 +170,7 @@ class BlogClassifier:
                 media_type=MediaType.UNKNOWN,
                 success=False,
                 error=f"输入校验失败: {err_msg}",
-                industry_name=self._resolve_industry(item),
+                industry_name=item.industry_name or "",
                 is_forward=item.has_forward(),
                 forward_mid=item.forward_mid,
                 forward_status="failed" if item.has_forward() else "not_forward",
@@ -169,6 +178,26 @@ class BlogClassifier:
 
         media_type = self.detect_media_type(item)
         industry_name = self._resolve_industry(item)
+
+        # 行业不支持时，直接返回"其他"作为有效业务结果
+        if not industry_name:
+            self.logger.warning(
+                f"行业不支持 mid={item.mid} industry={item.industry_name}，归为其他"
+            )
+            return ClassifyResult(
+                mid=item.mid,
+                uid=item.uid,
+                layer=self.other_label,
+                media_type=media_type,
+                success=True,
+                error="",
+                model_output=f"行业不支持: {item.industry_name}",
+                industry_name=item.industry_name or "",
+                is_forward=item.has_forward(),
+                forward_mid=item.forward_mid,
+                forward_status="not_forward",
+            )
+
         self.logger.info(
             f"开始分类 mid={item.mid} uid={item.uid} industry={industry_name} type={media_type} forward={item.has_forward()}"
         )
