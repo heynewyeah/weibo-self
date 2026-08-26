@@ -34,6 +34,7 @@ from .mid_resolver import MidResolverClient, ResolvedBlog
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_CACHE_DIR = os.path.join(PROJECT_ROOT, "output", ".cache")
 DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
+RESOLVE_FAIL_LOG = os.path.join(DEFAULT_LOG_DIR, "反解失败汇总.txt")
 
 
 @dataclass
@@ -151,7 +152,28 @@ class ClassifyPipeline:
             except Exception as e:
                 result.error = f"反解失败: {str(e)}"
                 result.error_stage = "resolve"
-                raise
+                # 反解失败 → 写入反解失败汇总 + 归为其他(level=6)
+                self._write_resolve_fail_log(result, record)
+                result.layer = self.classifier.other_label
+                result.success = True
+                result.industry_name = record.task_industry_name if record else ""
+                result.forward_status = "not_forward"
+                # 尝试回写 level=6
+                if write_back and record is not None and self.repo is not None:
+                    try:
+                        from .models import ClassifyResult as CR
+                        fake_result = CR(
+                            mid=mid, uid=uid or "", layer=self.classifier.other_label,
+                            media_type="unknown", success=True,
+                            industry_name=result.industry_name,
+                        )
+                        self.repo.update_level_result(None, record, fake_result)
+                    except Exception as wb_e:
+                        self.logger.warning(f"反解失败回写 level=6 也失败 mid={mid}: {wb_e}")
+                result.timings.resolve_ms = (time.perf_counter() - t_resolve_start) * 1000
+                result.timings.total_ms = (time.perf_counter() - t_total_start) * 1000
+                self._log_result(result)
+                return result
 
             result.timings.resolve_ms = (time.perf_counter() - t_resolve_start) * 1000
             result.resolved = resolved
@@ -374,6 +396,24 @@ class ClassifyPipeline:
                 f.write(line)
         except Exception as e:
             self.logger.error(f"写入错误日志失败: {e}")
+
+    def _write_resolve_fail_log(self, result: ProcessResult, record: Optional[MidRecord] = None):
+        """反解失败时写入反解失败汇总.txt"""
+        os.makedirs(self.error_log_dir, exist_ok=True)
+        line = (
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t"
+            f"{result.mid}\t"
+            f"{result.uid}\t"
+            f"{record.customer_id if record else ''}\t"
+            f"{record.super_task_id if record else ''}\t"
+            f"{record.task_industry_name if record else ''}\t"
+            f"{result.error.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
+        )
+        try:
+            with open(RESOLVE_FAIL_LOG, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception as e:
+            self.logger.error(f"写入反解失败汇总失败: {e}")
 
     def _log_result(self, result: ProcessResult):
         t = result.timings

@@ -390,17 +390,27 @@ class BlogClassifier:
             result.media_type = "video_fallback_text"
             return result
 
-        video_mode = self.video_handler.video_mode
-        self.logger.info(f"视频处理模式: {video_mode}, mid={item.mid}")
-
+        # 策略：先尝试 frame（抽帧），失败则降级为 cover（封面图）
         image_paths = []
+        used_mode = "frame"
+        self.logger.info(f"视频处理: 先尝试 frame 模式, mid={item.mid}")
+
         for media_id in (item.media_ids or []):
-            paths = self.video_handler.process_video(media_id)
+            paths = self.video_handler.process_video(media_id, mode="frame")
             image_paths.extend(paths)
 
         if not image_paths:
             self.logger.warning(
-                f"视频图片获取失败(mode={video_mode}) mid={item.mid}，退化为纯文本分类"
+                f"frame 模式获取失败 mid={item.mid}，降级为 cover 模式"
+            )
+            for media_id in (item.media_ids or []):
+                paths = self.video_handler.process_video(media_id, mode="cover")
+                image_paths.extend(paths)
+            used_mode = "cover"
+
+        if not image_paths:
+            self.logger.warning(
+                f"视频图片获取失败(frame+cover均失败) mid={item.mid}，退化为纯文本分类"
             )
             result = self._classify_text(item)
             result.media_type = "video_fallback_text"
@@ -437,7 +447,7 @@ class BlogClassifier:
                 industry_name=industry_name,
             )
 
-        actual_media_type = f"video_{video_mode}"
+        actual_media_type = f"video_{used_mode}"
         return ClassifyResult(
             mid=item.mid,
             uid=item.uid,
