@@ -121,7 +121,7 @@ SELECT
     LEFT(mid_fids, 60) AS mid_fids_preview,
     forward_mid,
     LEFT(forward_text, 60) AS forward_text_preview,
-    level
+    level \G
 FROM ${TABLE_NAME}
 WHERE ${WHERE}
 ORDER BY id ASC
