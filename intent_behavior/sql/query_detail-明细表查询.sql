@@ -85,12 +85,9 @@ SELECT
     super_task_id,
     mid,
     mid_uid,
-    mid_text,
-    mid_pids,
-    mid_fids,
     forward_mid,
-    forward_text,
-    hit_mid_gat,
+    forward_mid_text,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 ORDER BY id ASC
