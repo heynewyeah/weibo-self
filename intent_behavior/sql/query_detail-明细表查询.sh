@@ -121,7 +121,7 @@ SELECT
     LEFT(mid_fids, 60) AS mid_fids_preview,
     forward_mid,
     LEFT(forward_text, 60) AS forward_text_preview,
-    level \G
+    level
 FROM ${TABLE_NAME}
 WHERE ${WHERE}
 ORDER BY id ASC
@@ -129,11 +129,11 @@ LIMIT ${LIMIT};
 " 2>/dev/null \
     | awk -F'\t' '
 BEGIN {
-    printf "%-8s %-15s %-25s %-20s %-15s %-40s %-30s %-30s %-20s %-30s %-6s\n",
+    printf "%-8s %-15s %-25s %-22s %-15s %-80s %-62s %-62s %-22s %-62s %-6s\n",
         "id","customer_id","super_task_id","mid","mid_uid","text","pids","fids","forward_mid","forward_text","level"
 }
-{
-    printf "%-8s %-15s %-25s %-20s %-15s %-40s %-30s %-30s %-20s %-30s %-6s\n",
+NR>1 {
+    printf "%-8s %-15s %-25s %-22s %-15s %-80s %-62s %-62s %-22s %-62s %-6s\n",
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
 }'
 
