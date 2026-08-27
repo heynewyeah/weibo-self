@@ -73,7 +73,9 @@ class ProcessResult:
     industry_name: str = ""
     is_forward: bool = False
     forward_mid: str = ""
+    forward_content: str = ""
     forward_status: str = "not_forward"
+    hit_mid_gat: str = ""
     resolved: Optional[ResolvedBlog] = None
     timings: ProcessTimings = field(default_factory=ProcessTimings)
     write_back: bool = False
@@ -96,7 +98,9 @@ class ProcessResult:
             "industry_name": self.industry_name,
             "is_forward": self.is_forward,
             "forward_mid": self.forward_mid,
+            "forward_content": self.forward_content,
             "forward_status": self.forward_status,
+            "hit_mid_gat": self.hit_mid_gat,
             "timings": self.timings.to_dict(),
             "write_back": self.write_back,
         }
@@ -141,6 +145,12 @@ class ClassifyPipeline:
         t_total_start = time.perf_counter()
         result = ProcessResult(mid=mid, uid=uid or "", mode=mode, write_back=write_back)
 
+        # 从 record 中提取 hit_mid_gat 和转发信息
+        if record is not None:
+            result.hit_mid_gat = record.hit_mid_gat or ""
+            result.forward_mid = record.forward_mid or ""
+            result.forward_content = record.forward_text or ""
+
         try:
             t_resolve_start = time.perf_counter()
             try:
@@ -152,10 +162,10 @@ class ClassifyPipeline:
             except Exception as e:
                 result.error = f"反解失败: {str(e)}"
                 result.error_stage = "resolve"
-                # 反解失败 → 写入反解失败汇总 + 归为其他(level=6)
+                # 反解失败 → 写入反解失败汇总 + 归为其他(level=6) + 标记失败
                 self._write_resolve_fail_log(result, record)
                 result.layer = self.classifier.other_label
-                result.success = True
+                result.success = False
                 result.industry_name = record.task_industry_name if record else ""
                 result.forward_status = "not_forward"
                 # 尝试回写 level=6
@@ -424,8 +434,10 @@ class ClassifyPipeline:
             f"处理结果 [{status}] mid={result.mid} uid={result.uid}",
             f"  模式: {result.mode}",
             f"  行业: {result.industry_name}",
+            f"  hit_mid_gat: {result.hit_mid_gat}",
             f"  是否转发: {result.is_forward}",
-            f"  原博文mid: {result.forward_mid}",
+            f"  原博文mid(forward_mid): {result.forward_mid}",
+            f"  原博文内容: {(result.forward_content or '')[:120]}",
             f"  转发判定: {result.forward_status}",
             f"  媒体类型: {result.media_type}",
             f"  分类层级: {result.layer}",

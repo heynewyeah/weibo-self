@@ -273,6 +273,7 @@ mysql:
   shard_task_match_field: "super_task_id"
   shard_forward_mid_field: "forward_mid"
   shard_forward_text_field: "forward_text"
+  shard_hit_mid_gat_field: "hit_mid_gat"
   test_customer_id: 2608812381
 
 # MySQL worker 轮询配置

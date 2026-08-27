@@ -67,6 +67,7 @@ class MidRecord:
     mid_fids: str
     forward_mid: str = ""
     forward_text: str = ""
+    hit_mid_gat: str = ""
     level: int = 0
     task_industry_name: str = ""
     task_brand_values: List[str] = field(default_factory=list)
@@ -345,6 +346,7 @@ class MySQLTaskRepository:
     def _row_to_mid_record(self, row: Dict[str, Any], task: Optional[TaskRecord] = None) -> MidRecord:
         forward_mid_field = self.config.get("shard_forward_mid_field", "forward_mid")
         forward_text_field = self.config.get("shard_forward_text_field", "forward_text")
+        hit_mid_gat_field = self.config.get("shard_hit_mid_gat_field", "hit_mid_gat")
         return MidRecord(
             id=int(row.get("id", 0)),
             customer_id=int(row.get("customer_id", 0)),
@@ -356,6 +358,7 @@ class MySQLTaskRepository:
             mid_fids=str(row.get("mid_fids", "") or ""),
             forward_mid=str(row.get(forward_mid_field, "") or ""),
             forward_text=str(row.get(forward_text_field, "") or ""),
+            hit_mid_gat=str(row.get(hit_mid_gat_field, "") or ""),
             level=int(row.get("level", 0) or 0),
             task_industry_name=task.industry_name if task else "",
             task_brand_values=list(task.brand_values) if task else [],

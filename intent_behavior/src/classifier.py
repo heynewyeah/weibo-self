@@ -118,13 +118,14 @@ class BlogClassifier:
         """
         转发异常判断：
         - 返回 (is_abnormal, status, model_output)
-        - status: normal / abnormal / failed / not_forward
+        - status: normal / abnormal / empty_forward / not_forward
+        - 当转发原博文内容为空时，返回 empty_forward，上层归为 level=6
         """
         if not item.has_forward():
             return False, "not_forward", ""
 
         if not item.forward_content or not item.forward_content.strip():
-            return False, "failed", "被转发原博文内容为空，无法完成转发异常判断"
+            return True, "empty_forward", "被转发原博文内容为空，归为其他(level=6)"
 
         industry_name = self._resolve_industry(item)
         brand_terms = self._format_brand_terms(item)
