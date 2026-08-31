@@ -87,7 +87,7 @@ intent_behavior/
 - `task_type = 1`
 - 且满足：
   - `exec_status != 5`
-  - 或 `exec_status = 5 and end_time < now() - 1 day`
+  - 或 `exec_status = 5 and end_time > now() - 1 day`
 
 ---
 

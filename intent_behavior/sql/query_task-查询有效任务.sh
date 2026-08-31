@@ -90,7 +90,7 @@ if [ -n "$MID" ]; then
 fi
 
 # ── 构造 WHERE 条件 ──
-WHERE="task_type = 1 AND (exec_status != 5 OR (exec_status = 5 AND end_time < DATE_SUB(NOW(), INTERVAL 1 DAY)))"
+WHERE="task_type = 1 AND (exec_status != 5 OR (exec_status = 5 AND end_time > DATE_SUB(NOW(), INTERVAL 1 DAY)))"
 if [ -n "$TASK_ID" ]; then
     WHERE="task_id = ${TASK_ID}"
 elif [ -n "$CUSTOMER_ID" ]; then

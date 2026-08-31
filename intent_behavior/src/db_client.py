@@ -185,7 +185,7 @@ class MySQLTaskRepository:
         WHERE task_type = %s
           AND (
                 exec_status != %s
-                OR (exec_status = %s AND {end_time_field} < DATE_SUB(NOW(), INTERVAL 1 DAY))
+                OR (exec_status = %s AND {end_time_field} > DATE_SUB(NOW(), INTERVAL 1 DAY))
               )
         ORDER BY id ASC
         LIMIT %s
