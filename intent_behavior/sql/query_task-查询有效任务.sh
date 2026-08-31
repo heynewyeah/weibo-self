@@ -90,6 +90,8 @@ if [ -n "$MID" ]; then
 fi
 
 # ── 构造 WHERE 条件 ──
+# 与 src/db_client.py fetch_active_tasks() 保持一致：
+#   task_type=1 AND (exec_status != 5 OR (exec_status=5 AND end_time > now()-1天))
 WHERE="task_type = 1 AND (exec_status != 5 OR (exec_status = 5 AND end_time > DATE_SUB(NOW(), INTERVAL 1 DAY)))"
 if [ -n "$TASK_ID" ]; then
     WHERE="task_id = ${TASK_ID}"
