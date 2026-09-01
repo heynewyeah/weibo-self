@@ -266,7 +266,7 @@ class MySQLTaskRepository:
         task_match_field = self.config.get("shard_task_match_field", "super_task_id")
         task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
         level_cond = f"AND level = {self.pending_level}" if only_level_zero else ""
-        lock_clause = "FOR UPDATE SKIP LOCKED" if for_update else ""
+        lock_clause = "FOR UPDATE" if for_update else ""
         sql = f"""
         SELECT *
         FROM {table}
