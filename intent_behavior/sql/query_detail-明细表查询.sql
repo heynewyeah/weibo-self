@@ -25,7 +25,7 @@ SELECT
     mid_fids,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE level = 0
@@ -47,7 +47,7 @@ SELECT
     mid_fids,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE mid = '5239377989207686';
@@ -67,7 +67,7 @@ SELECT
     mid_fids,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE customer_id = 2608812381
@@ -106,7 +106,7 @@ SELECT
     mid_text,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE forward_mid IS NOT NULL
@@ -145,7 +145,7 @@ SELECT
     mid_text,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE super_task_id = 1296499607471128577
@@ -167,7 +167,7 @@ SELECT
     mid_fids,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
 WHERE (mid_text IS NULL OR mid_text = '' OR LENGTH(mid_text) < 5)
@@ -177,7 +177,7 @@ LIMIT 20;
 
 
 -- =============================================================
--- 场景9：查 hit_mid_gat 非空的记录
+-- 场景9：查 hit_mid_tag 非空的记录
 -- =============================================================
 SELECT
     id,
@@ -188,11 +188,11 @@ SELECT
     mid_text,
     forward_mid,
     forward_text,
-    hit_mid_gat,
+    hit_mid_tag,
     level
 FROM nature_ad_super_mid_1
-WHERE hit_mid_gat IS NOT NULL
-  AND hit_mid_gat != ''
+WHERE hit_mid_tag IS NOT NULL
+  AND hit_mid_tag != ''
 ORDER BY id ASC
 LIMIT 20;
 
@@ -201,42 +201,42 @@ LIMIT 20;
 -- 场景10：跨分表查询（查所有分表中某个 mid）
 -- 注意：需要手动 UNION ALL 所有分表，或逐个执行
 -- =============================================================
-SELECT 'nature_ad_super_mid_0' AS table_name, id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_0 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_0' AS table_name, id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_0 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_1', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_1 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_1', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_1 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_2', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_2 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_2', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_2 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_3', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_3 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_3', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_3 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_4', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_4 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_4', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_4 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_5', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_5 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_5', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_5 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_6', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_6 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_6', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_6 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_7', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_7 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_7', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_7 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_8', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_8 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_8', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_8 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_9', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_9 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_9', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_9 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_10', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_10 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_10', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_10 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_11', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_11 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_11', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_11 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_12', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_12 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_12', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_12 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_13', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_13 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_13', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_13 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_14', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_14 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_14', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_14 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_15', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_15 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_15', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_15 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_16', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_16 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_16', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_16 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_17', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_17 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_17', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_17 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_18', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_18 WHERE mid = '5239377989207686'
+SELECT 'nature_ad_super_mid_18', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_18 WHERE mid = '5239377989207686'
 UNION ALL
-SELECT 'nature_ad_super_mid_19', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_gat FROM nature_ad_super_mid_19 WHERE mid = '5239377989207686';
+SELECT 'nature_ad_super_mid_19', id, customer_id, super_task_id, mid, mid_uid, level, forward_mid, hit_mid_tag FROM nature_ad_super_mid_19 WHERE mid = '5239377989207686';
