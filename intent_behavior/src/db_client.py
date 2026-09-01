@@ -249,7 +249,15 @@ class MySQLTaskRepository:
         task: TaskRecord,
         limit: int = 100,
         only_level_zero: bool = True,
+        for_update: bool = True,
     ) -> List[MidRecord]:
+        """
+        拉取待处理记录。
+
+        Args:
+            for_update: 是否加行级锁（SELECT ... FOR UPDATE SKIP LOCKED）。
+                        开启后多个 worker 实例不会重复处理同一条记录。
+        """
         table = task.shard_table
         if not self.table_exists(conn, table):
             self.logger.warning("分表不存在，跳过: %s", table)
@@ -258,6 +266,7 @@ class MySQLTaskRepository:
         task_match_field = self.config.get("shard_task_match_field", "super_task_id")
         task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
         level_cond = f"AND level = {self.pending_level}" if only_level_zero else ""
+        lock_clause = "FOR UPDATE SKIP LOCKED" if for_update else ""
         sql = f"""
         SELECT *
         FROM {table}
@@ -266,6 +275,7 @@ class MySQLTaskRepository:
           {level_cond}
         ORDER BY id ASC
         LIMIT %s
+        {lock_clause}
         """
         with conn.cursor() as cur:
             cur.execute(sql, (task.customer_id, task_match_value, limit))

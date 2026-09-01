@@ -5,17 +5,36 @@
 import os
 import re
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Optional, List, Dict
 
 
-def setup_logger(name: str = "classifier", log_dir: str = "logs",
-                 level: str = "INFO") -> logging.Logger:
+def setup_logger(
+    name: str = "classifier",
+    log_dir: str = "logs",
+    level: str = "INFO",
+    max_bytes: int = 10 * 1024 * 1024,  # 10MB
+    backup_count: int = 5,
+) -> logging.Logger:
     """
-    初始化日志器，同时输出到控制台和文件
+    初始化日志器，同时输出到控制台和文件。
+
+    文件日志使用 RotatingFileHandler 自动轮转：
+    - 单个文件最大 max_bytes（默认 10MB）
+    - 保留 backup_count 个历史文件（默认 5 个）
+    - 日志存放位置：{log_dir}/classify.log
+      轮转后自动命名为 classify.log.1, classify.log.2, ...
+
+    Args:
+        name: 日志器名称
+        log_dir: 日志目录
+        level: 日志级别
+        max_bytes: 单个日志文件最大字节数
+        backup_count: 保留的历史文件数量
     """
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"classify_{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.path.join(log_dir, "classify.log")
 
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -32,7 +51,12 @@ def setup_logger(name: str = "classifier", log_dir: str = "logs",
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 

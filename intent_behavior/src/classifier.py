@@ -7,9 +7,11 @@
 3. 调用 vLLM API 进行分类
 4. 提取分类结果并返回
 5. 支持行业感知与转发异常判断
+6. 超短内容 / 纯表情 / 纯话题标签 → 归为"其他"
 """
 
 import os
+import re
 import time
 import logging
 from typing import Dict, Any, Optional, List, Tuple
@@ -147,6 +149,36 @@ class BlogClassifier:
             return True, "abnormal", model_output
         return False, "normal", model_output
 
+    def _is_trivial_content(self, content: str) -> bool:
+        """
+        判断内容是否为"无意义内容"：
+        - 有效文字 < 6 字（去除表情、话题标签、空白后）
+        - 纯表情
+        - 纯话题标签（如 #xxx# #yyy#）
+        """
+        if not content:
+            return True
+
+        # 去除话题标签 #xxx#
+        text = re.sub(r'#[^#]+#', '', content)
+        # 去除微博表情 [xxx]
+        text = re.sub(r'\[[^\]]+\]', '', text)
+        # 去除 Unicode emoji
+        text = re.sub(
+            r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF'
+            r'\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF'
+            r'\U00002702-\U000027B0\U0000FE00-\U0000FE0F'
+            r'\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F'
+            r'\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+',
+            '', text,
+        )
+        # 去除空白
+        text = text.strip()
+
+        if len(text) < 6:
+            return True
+        return False
+
     def detect_media_type(self, item: BlogItem) -> str:
         if item.media_ids:
             return MediaType.VIDEO
@@ -179,6 +211,25 @@ class BlogClassifier:
 
         media_type = self.detect_media_type(item)
         industry_name = self._resolve_industry(item)
+
+        # 超短内容 / 纯表情 / 纯话题 → 归为"其他"（有效业务结果）
+        if self._is_trivial_content(item.content):
+            self.logger.info(
+                f"内容过短或无意义 mid={item.mid}，归为其他"
+            )
+            return ClassifyResult(
+                mid=item.mid,
+                uid=item.uid,
+                layer=self.other_label,
+                media_type=media_type,
+                success=True,
+                error="",
+                model_output="内容过短或无意义（<6字/纯表情/纯话题），归为其他",
+                industry_name=industry_name or item.industry_name or "",
+                is_forward=item.has_forward(),
+                forward_mid=item.forward_mid,
+                forward_status="not_forward",
+            )
 
         # 行业不支持时，直接返回"其他"作为有效业务结果
         if not industry_name:

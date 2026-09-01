@@ -219,7 +219,9 @@ media:
     extract_frames_count: 3
     download_timeout: 120
     enabled: true
-    video_mode: "cover"
+    # 视频处理策略：始终优先 frame（抽帧），frame 失败自动降级 cover（封面图）
+    # 此配置仅作为文档参考，实际策略由 classifier.py 控制（优先 frame）
+    video_mode: "frame"
 
 # 数据提取配置
 extractor:

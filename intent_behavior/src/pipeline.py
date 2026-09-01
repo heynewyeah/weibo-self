@@ -35,6 +35,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_CACHE_DIR = os.path.join(PROJECT_ROOT, "output", ".cache")
 DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 RESOLVE_FAIL_LOG = os.path.join(DEFAULT_LOG_DIR, "反解失败汇总.txt")
+RESOLVE_FAIL_HEADER = "插入时间\tmid\tuid\tcustomer_id\tsuper_task_id\tindustry\t重试次数\t错误信息\n"
 
 
 @dataclass
@@ -326,8 +327,10 @@ class ClassifyPipeline:
         return results
 
     def _cleanup_temp_files(self, mid: str, video_fid: str = ""):
+        """只清理当次任务产生的临时文件，不做 glob 兜底。"""
         cleaned = []
 
+        # 1. 图片临时目录（以 mid 命名的子目录）
         img_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images", mid)
         if os.path.exists(img_dir):
             try:
@@ -336,6 +339,7 @@ class ClassifyPipeline:
             except Exception as e:
                 self.logger.warning(f"清理图片目录失败 {img_dir}: {e}")
 
+        # 2. 视频相关文件（以 fid 命名的文件）
         if video_fid:
             safe_fid = video_fid.replace(":", "_")
 
@@ -362,21 +366,6 @@ class ClassifyPipeline:
                     cleaned.append(frames_dir)
                 except Exception as e:
                     self.logger.warning(f"清理视频帧目录失败 {frames_dir}: {e}")
-
-        for pattern in [os.path.join(DEFAULT_CACHE_DIR, "**", f"*{mid}*")]:
-            for path in glob.glob(pattern, recursive=True):
-                if os.path.isfile(path):
-                    try:
-                        os.remove(path)
-                        cleaned.append(path)
-                    except Exception:
-                        pass
-                elif os.path.isdir(path) and mid in os.path.basename(path):
-                    try:
-                        shutil.rmtree(path)
-                        cleaned.append(path)
-                    except Exception:
-                        pass
 
         if cleaned:
             self.logger.debug(f"清理临时文件: {cleaned}")
@@ -408,8 +397,28 @@ class ClassifyPipeline:
             self.logger.error(f"写入错误日志失败: {e}")
 
     def _write_resolve_fail_log(self, result: ProcessResult, record: Optional[MidRecord] = None):
-        """反解失败时写入反解失败汇总.txt"""
+        """
+        反解失败时写入反解失败汇总.txt。
+        单文件追加模式，首次写入时自动添加表头。
+        表头：插入时间 / mid / uid / customer_id / super_task_id / industry / 重试次数 / 错误信息
+        """
         os.makedirs(self.error_log_dir, exist_ok=True)
+
+        # 计算重试次数：检查文件中该 mid 已出现多少次
+        retry_count = 1
+        try:
+            if os.path.exists(RESOLVE_FAIL_LOG):
+                with open(RESOLVE_FAIL_LOG, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.split("\t")
+                        if len(parts) >= 2 and parts[1] == result.mid:
+                            retry_count += 1
+        except Exception:
+            pass
+
+        # 如果文件不存在或为空，先写表头
+        need_header = not os.path.exists(RESOLVE_FAIL_LOG) or os.path.getsize(RESOLVE_FAIL_LOG) == 0
+
         line = (
             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t"
             f"{result.mid}\t"
@@ -417,10 +426,13 @@ class ClassifyPipeline:
             f"{record.customer_id if record else ''}\t"
             f"{record.super_task_id if record else ''}\t"
             f"{record.task_industry_name if record else ''}\t"
+            f"{retry_count}\t"
             f"{result.error.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
         )
         try:
             with open(RESOLVE_FAIL_LOG, "a", encoding="utf-8") as f:
+                if need_header:
+                    f.write(RESOLVE_FAIL_HEADER)
                 f.write(line)
         except Exception as e:
             self.logger.error(f"写入反解失败汇总失败: {e}")

@@ -5,16 +5,15 @@ MySQL 分表持续消费 worker。
 1. 查询 `super_mid_task` 中有效任务
 2. 动态路由到 `nature_ad_super_mid_{customer_id % 20}`
 3. 拉取 `level=0` 的待分类 mid
-4. 调用 `BlogClassifier.classify_item()` 进行图文视频分类
-5. 将分类结果通过 HTTP 接口回写到王燕威服务
-   （POST /api/v1/super-mid/update-level，含 customer_id/task_id/mid/level/update_time）
-6. 异常场景记录错误日志，不再写回 MySQL 错误字段
+4. 通过 ClassifyPipeline 执行完整链路：
+   mid 反解 → 媒体类型判定 → 转发异常判断 → 分类 → 临时文件清理 → HTTP 回写
+5. 异常场景记录错误日志
 
 当前实现为单进程串行版本，优先保证：
+- 完整链路（反解 + 分类 + 回写）
 - 路由正确
 - 字段映射正确
-- 回写正确
-- 与现有分类链路解耦复用
+- 与 pipeline 统一复用
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from .classifier import BlogClassifier
-from .db_client import MySQLTaskRepository, TaskRecord, MidRecord, build_blog_items
+from .pipeline import ClassifyPipeline
+from .db_client import MySQLTaskRepository, TaskRecord, MidRecord
 
 
 @dataclass
@@ -46,7 +45,7 @@ class MySQLShardWorker:
         self.mysql_cfg = config.get("mysql", {})
         self.logger = logger or logging.getLogger(__name__)
         self.repo = MySQLTaskRepository(self.mysql_cfg, self.logger, app_config=config)
-        self.classifier = BlogClassifier(config, self.logger)
+        self.pipeline = ClassifyPipeline(config, self.logger)
         self.stats = WorkerStats()
 
     def run_once(self) -> Dict[str, Any]:
@@ -118,16 +117,15 @@ class MySQLShardWorker:
 
     def _process_task(self, conn, task: TaskRecord, batch_limit: int) -> Dict[str, int]:
         pending_records = self.repo.fetch_pending_mids(conn, task, limit=batch_limit)
-        pending_pairs = build_blog_items(pending_records)
 
         task_summary = {
-            "pending": len(pending_pairs),
+            "pending": len(pending_records),
             "success": 0,
             "fail": 0,
         }
-        self.stats.pending_count += len(pending_pairs)
+        self.stats.pending_count += len(pending_records)
 
-        if not pending_pairs:
+        if not pending_records:
             self.logger.info(
                 "任务无待处理记录 task_id=%s customer_id=%s shard=%s",
                 task.id,
@@ -141,11 +139,11 @@ class MySQLShardWorker:
             task.id,
             task.customer_id,
             task.shard_table,
-            len(pending_pairs),
+            len(pending_records),
         )
 
-        for record, item in pending_pairs:
-            ok = self._process_record(conn, task, record, item=item)
+        for record in pending_records:
+            ok = self._process_record(conn, task, record)
             if ok:
                 task_summary["success"] += 1
                 self.stats.success_count += 1
@@ -155,7 +153,7 @@ class MySQLShardWorker:
 
         return task_summary
 
-    def _process_record(self, conn, task: TaskRecord, record: MidRecord, item) -> bool:
+    def _process_record(self, conn, task: TaskRecord, record: MidRecord) -> bool:
         self.logger.info(
             "处理中 task_id=%s row_id=%s mid=%s uid=%s",
             task.id,
@@ -165,9 +163,16 @@ class MySQLShardWorker:
         )
 
         try:
-            result = self.classifier.classify_item(item)
-            self.repo.update_level_result(conn, record, result)
-            return True
+            # 通过 ClassifyPipeline 执行完整链路：
+            # mid 反解 → 分类 → 临时文件清理 → HTTP 回写
+            process_result = self.pipeline.process_one(
+                mid=record.mid,
+                uid=record.mid_uid,
+                mode="auto",
+                write_back=True,
+                record=record,
+            )
+            return process_result.success
         except Exception as exc:
             self.logger.exception(
                 "记录处理失败 task_id=%s row_id=%s mid=%s error=%s",
