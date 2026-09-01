@@ -217,15 +217,8 @@ class MySQLTaskRepository:
             brand_values = parse_tag_json_values(brand_tag_raw)
             industry_name = self.resolve_industry(industry_values)
 
-            if not industry_name:
-                self.logger.warning(
-                    "任务未命中支持行业，跳过: id=%s task_id=%s industry_values=%s",
-                    row.get("id"),
-                    row.get(task_id_field),
-                    industry_values,
-                )
-                continue
-
+            # 所有任务都处理，不跳过任何行业
+            # 非支持行业（如数码）会在分类阶段直接归为 level=6
             tasks.append(
                 TaskRecord(
                     id=int(row.get("id", 0)),
@@ -341,17 +334,39 @@ class MySQLTaskRepository:
         )
 
     def resolve_industry(self, industry_values: List[str]) -> str:
+        """
+        解析行业名称。
+        - 如果 industry_values 中有支持的行业，直接返回
+        - 如果 industry_values 非空但没有支持的行业，返回第一个值（如"数码"），后续归为 level=6
+        - 如果 industry_values 为空（无行业标签），返回空字符串
+        """
         for value in industry_values:
             if value in self.supported_industries:
                 return value
-        return self.default_industry if self.default_industry in self.supported_industries else ""
+        # 有行业标签但都不支持 → 返回原始值，后续归为 level=6
+        if industry_values:
+            return industry_values[0]
+        # 无行业标签 → 返回空字符串
+        return ""
 
     def get_level_code(self, industry_name: str, layer: str) -> int:
-        rules = self.industry_rules.get(industry_name or self.default_industry, {})
-        mapping = rules.get("level_mapping", {})
-        if layer in mapping:
-            return int(mapping[layer])
-        return self.pending_level
+        """
+        根据行业和层级获取 level 数值。
+        - 支持的行业：从 industry_rules 中查找映射
+        - 不支持的行业：统一返回 6（其他）
+        """
+        if industry_name in self.industry_rules:
+            mapping = self.industry_rules[industry_name].get("level_mapping", {})
+            if layer in mapping:
+                return int(mapping[layer])
+        # 不支持的行业或未知层级 → 统一归为 6（其他）
+        other_code = 6
+        # 尝试从默认行业规则中获取"其他"的映射值
+        default_rules = self.industry_rules.get(self.default_industry, {})
+        default_mapping = default_rules.get("level_mapping", {})
+        if "其他" in default_mapping:
+            other_code = int(default_mapping["其他"])
+        return other_code if layer == "其他" else self.pending_level
 
     def _row_to_mid_record(self, row: Dict[str, Any], task: Optional[TaskRecord] = None) -> MidRecord:
         forward_mid_field = self.config.get("shard_forward_mid_field", "forward_mid")

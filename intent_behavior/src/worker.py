@@ -61,6 +61,11 @@ class MySQLShardWorker:
             "fail": 0,
         }
 
+        self.logger.info("")
+        self.logger.info("#" * 80)
+        self.logger.info(f"# 第 {self.stats.loops} 轮轮询开始")
+        self.logger.info("#" * 80)
+
         with self.repo.connect() as conn:
             tasks = self.repo.fetch_active_tasks(conn, limit=active_task_limit)
             self.stats.task_count += len(tasks)
@@ -70,11 +75,20 @@ class MySQLShardWorker:
                 self.logger.info("未发现有效任务，结束本轮轮询")
                 return loop_summary
 
-            for task in tasks:
-                task_summary = self._process_task(conn, task, batch_limit)
+            self.logger.info(f"发现 {len(tasks)} 个有效任务")
+
+            for task_idx, task in enumerate(tasks, 1):
+                task_summary = self._process_task(conn, task, batch_limit, task_idx, len(tasks))
                 loop_summary["pending"] += task_summary["pending"]
                 loop_summary["success"] += task_summary["success"]
                 loop_summary["fail"] += task_summary["fail"]
+
+        self.logger.info("")
+        self.logger.info(f"第 {self.stats.loops} 轮轮询完成: "
+                         f"任务数={loop_summary['tasks']} "
+                         f"记录数={loop_summary['pending']} "
+                         f"成功={loop_summary['success']} "
+                         f"失败={loop_summary['fail']}")
 
         return loop_summary
 
@@ -95,14 +109,6 @@ class MySQLShardWorker:
             loop_idx += 1
             try:
                 summary = self.run_once()
-                self.logger.info(
-                    "轮询完成 loop=%s tasks=%s pending=%s success=%s fail=%s",
-                    summary["loops"],
-                    summary["tasks"],
-                    summary["pending"],
-                    summary["success"],
-                    summary["fail"],
-                )
             except KeyboardInterrupt:
                 self.logger.info("收到中断信号，worker 退出")
                 break
@@ -115,7 +121,17 @@ class MySQLShardWorker:
 
             time.sleep(poll_interval)
 
-    def _process_task(self, conn, task: TaskRecord, batch_limit: int) -> Dict[str, int]:
+    def _process_task(self, conn, task: TaskRecord, batch_limit: int,
+                      task_idx: int, total_tasks: int) -> Dict[str, int]:
+        self.logger.info("")
+        self.logger.info("-" * 80)
+        self.logger.info(f"任务 [{task_idx}/{total_tasks}] "
+                         f"task_id={task.task_id} "
+                         f"customer_id={task.customer_id} "
+                         f"industry={task.industry_name} "
+                         f"shard={task.shard_table}")
+        self.logger.info("-" * 80)
+
         pending_records = self.repo.fetch_pending_mids(conn, task, limit=batch_limit)
 
         task_summary = {
@@ -126,42 +142,35 @@ class MySQLShardWorker:
         self.stats.pending_count += len(pending_records)
 
         if not pending_records:
-            self.logger.info(
-                "任务无待处理记录 task_id=%s customer_id=%s shard=%s",
-                task.id,
-                task.customer_id,
-                task.shard_table,
-            )
+            self.logger.info(f"  └─ 无待处理记录")
             return task_summary
 
-        self.logger.info(
-            "开始处理任务 task_id=%s customer_id=%s shard=%s count=%s",
-            task.id,
-            task.customer_id,
-            task.shard_table,
-            len(pending_records),
-        )
+        self.logger.info(f"  └─ 待处理记录数: {len(pending_records)}")
 
-        for record in pending_records:
+        for record_idx, record in enumerate(pending_records, 1):
+            self.logger.info("")
+            self.logger.info(f"  ┌─ mid [{record_idx}/{len(pending_records)}] "
+                             f"mid={record.mid} uid={record.mid_uid} "
+                             f"forward_mid={record.forward_mid or '无'}")
+
             ok = self._process_record(conn, task, record)
             if ok:
                 task_summary["success"] += 1
                 self.stats.success_count += 1
+                self.logger.info(f"  └─ ✅ 处理成功")
             else:
                 task_summary["fail"] += 1
                 self.stats.fail_count += 1
+                self.logger.info(f"  └─ ❌ 处理失败")
+
+        self.logger.info("")
+        self.logger.info(f"  任务完成: task_id={task.task_id} "
+                         f"成功={task_summary['success']} "
+                         f"失败={task_summary['fail']}")
 
         return task_summary
 
     def _process_record(self, conn, task: TaskRecord, record: MidRecord) -> bool:
-        self.logger.info(
-            "处理中 task_id=%s row_id=%s mid=%s uid=%s",
-            task.id,
-            record.id,
-            record.mid,
-            record.mid_uid,
-        )
-
         try:
             # 通过 ClassifyPipeline 执行完整链路：
             # mid 反解 → 分类 → 临时文件清理 → HTTP 回写
@@ -175,9 +184,8 @@ class MySQLShardWorker:
             return process_result.success
         except Exception as exc:
             self.logger.exception(
-                "记录处理失败 task_id=%s row_id=%s mid=%s error=%s",
-                task.id,
-                record.id,
+                "记录处理异常 task_id=%s mid=%s error=%s",
+                task.task_id,
                 record.mid,
                 exc,
             )
@@ -185,9 +193,8 @@ class MySQLShardWorker:
                 self.repo.update_record_failure(conn, record, str(exc))
             except Exception as write_exc:
                 self.logger.exception(
-                    "失败回写再次失败 task_id=%s row_id=%s mid=%s error=%s",
-                    task.id,
-                    record.id,
+                    "失败回写再次失败 task_id=%s mid=%s error=%s",
+                    task.task_id,
                     record.mid,
                     write_exc,
                 )

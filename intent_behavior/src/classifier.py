@@ -62,15 +62,16 @@ class BlogClassifier:
         """
         解析行业名称。
         - 如果 item.industry_name 在支持列表中，直接返回
-        - 否则返回 default_industry（兜底）
-        - 如果 item.industry_name 非空但不在支持列表中，返回空字符串（表示不支持）
+        - 如果 item.industry_name 非空但不在支持列表中，返回原始值（后续归为"其他"）
+        - 如果 item.industry_name 为空，返回空字符串（后续归为"其他"）
         """
-        if item.industry_name and item.industry_name in self.supported_industries:
+        if item.industry_name:
             return item.industry_name
-        if item.industry_name and item.industry_name not in self.supported_industries:
-            # 明确指定了行业但不在支持列表中 → 不支持
-            return ""
-        return self.default_industry
+        return ""
+
+    def _is_supported_industry(self, industry_name: str) -> bool:
+        """判断行业是否在支持列表中"""
+        return industry_name in self.supported_industries
 
     def _get_industry_rule(self, industry_name: str) -> Dict[str, Any]:
         return self.industry_rules.get(industry_name, self.industry_rules.get(self.default_industry, {}))
@@ -231,10 +232,10 @@ class BlogClassifier:
                 forward_status="not_forward",
             )
 
-        # 行业不支持时，直接返回"其他"作为有效业务结果
-        if not industry_name:
-            self.logger.warning(
-                f"行业不支持 mid={item.mid} industry={item.industry_name}，归为其他"
+        # 行业不支持时（非汽车/奶茶/空），直接返回"其他"作为有效业务结果（level=6）
+        if not self._is_supported_industry(industry_name):
+            self.logger.info(
+                f"行业不支持，归为其他 mid={item.mid} industry={industry_name or '空'}"
             )
             return ClassifyResult(
                 mid=item.mid,
@@ -243,8 +244,8 @@ class BlogClassifier:
                 media_type=media_type,
                 success=True,
                 error="",
-                model_output=f"行业不支持: {item.industry_name}",
-                industry_name=item.industry_name or "",
+                model_output=f"行业不支持: {industry_name or '空'}，归为其他(level=6)",
+                industry_name=industry_name or "",
                 is_forward=item.has_forward(),
                 forward_mid=item.forward_mid,
                 forward_status="not_forward",
