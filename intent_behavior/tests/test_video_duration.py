@@ -12,7 +12,7 @@
   # 指定 mid 列表（逗号分隔）
   python3 tests/test_video_duration.py --mids 5333296278144730,5239345868702306
 
-  # 从 MySQL 分表读取视频类博文（mid_fids 非空）
+  # 从 MySQL 分表读取 mid，通过反解筛选视频类博文
   python3 tests/test_video_duration.py --from-mysql --shard-index 1 --limit 20
 
   # 从文件读取 mid 列表（每行一个 mid 或 mid\\tuid）
@@ -189,17 +189,17 @@ def main():
         table_name = f"{mysql_cfg.get('shard_table_prefix', 'nature_ad_super_mid_')}{args.shard_index}"
 
         with repo.connect() as conn:
-            # 查 mid_fids 非空的记录（视频类博文）
+            # 读取所有 mid，后续通过反解判断是否为视频
             sql = f"""
-            SELECT mid, mid_uid, mid_fids
+            SELECT mid, mid_uid
             FROM {table_name}
-            WHERE mid_fids IS NOT NULL AND mid_fids != ''
+            WHERE 1=1
             """
             params = []
             if args.customer_id is not None:
                 sql += " AND customer_id = %s"
                 params.append(args.customer_id)
-            sql += f" ORDER BY id ASC LIMIT %s"
+            sql += " ORDER BY id ASC LIMIT %s"
             params.append(args.limit)
 
             with conn.cursor() as cur:
@@ -211,7 +211,7 @@ def main():
                 "mid": str(row.get("mid", "")),
                 "uid": str(row.get("mid_uid", "")),
             })
-        logger.info(f"从 {table_name} 读取到 {len(mid_list)} 条视频类博文")
+        logger.info(f"从 {table_name} 读取到 {len(mid_list)} 条记录，将通过反解筛选视频类博文")
 
     if not mid_list:
         logger.warning("没有待处理的 mid")
