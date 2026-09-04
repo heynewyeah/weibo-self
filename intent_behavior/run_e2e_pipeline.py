@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-端到端流水线 - 持续处理 MySQL 中的待分类任务
-===========================================
+端到端流水线 v1（最终版） - 持续处理 MySQL 中的待分类任务
+========================================================
 功能：
   1. 持续轮询 MySQL 中的 super_mid_task 表，查找待处理任务
   2. 对每个任务，处理其关联的所有 level=0 的记录
@@ -10,19 +10,19 @@
 
 运行方式：
   # 持续处理直到没有待处理任务
-  python3 tests/run_e2e_pipeline.py
+  python3 run_e2e_pipeline.py
 
   # 限制最大处理轮数（用于测试）
-  python3 tests/run_e2e_pipeline.py --max-rounds 3
+  python3 run_e2e_pipeline.py --max-rounds 3
 
   # 限制每轮处理的任务数
-  python3 tests/run_e2e_pipeline.py --max-tasks-per-round 5
+  python3 run_e2e_pipeline.py --max-tasks-per-round 5
 
   # 自定义轮询间隔（秒）
-  python3 tests/run_e2e_pipeline.py --poll-interval 30
+  python3 run_e2e_pipeline.py --poll-interval 30
 
   # 组合使用
-  python3 tests/run_e2e_pipeline.py --max-rounds 5 --max-tasks-per-round 10 --poll-interval 20
+  python3 run_e2e_pipeline.py --max-rounds 5 --max-tasks-per-round 10 --poll-interval 20
 
 输出：
   - 终端实时输出处理进度
@@ -40,9 +40,8 @@ import argparse
 import time
 from datetime import datetime
 
-# ── 路径设置 ──────────────────────────────────────────────────
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+# ── 路径设置（脚本与项目根目录同级）───────────────────────────
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.insert(0, PROJECT_DIR)
 

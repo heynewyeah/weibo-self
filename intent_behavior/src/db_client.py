@@ -196,45 +196,71 @@ class MySQLTaskRepository:
             rows = cur.fetchall() or []
 
         tasks: List[TaskRecord] = []
+        for row in rows:
+            task = self._row_to_task_record(row)
+            if task is not None:
+                tasks.append(task)
+        return tasks
+
+    def fetch_task_by_id(self, conn, task_id: int) -> Optional[TaskRecord]:
+        """
+        按 task_id 精确查询 `super_mid_task` 中的单条任务。
+
+        与 fetch_active_tasks 使用相同的字段解析逻辑；
+        返回 None 表示任务不存在，或任务缺少有效 customer_id 无法路由。
+        """
+        table = self.config.get("task_table", "super_mid_task")
+        task_id_field = self.config.get("task_id_field", "task_id")
+        sql = f"""
+        SELECT *
+        FROM {table}
+        WHERE {task_id_field} = %s
+        ORDER BY id ASC
+        LIMIT 1
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, (task_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        return self._row_to_task_record(row)
+
+    def _row_to_task_record(self, row: Dict[str, Any]) -> Optional[TaskRecord]:
         customer_field = self.config.get("task_customer_id_field", "customer_id")
         task_id_field = self.config.get("task_id_field", "task_id")
         industry_tag_field = self.config.get("task_industry_tag_field", "industry_tag")
         brand_tag_field = self.config.get("task_brand_tag_field", "brand_tag")
         fallback_customer_id = int(self.config.get("test_customer_id", 0) or 0)
 
-        for row in rows:
-            customer_id = int(row.get(customer_field, 0) or fallback_customer_id or 0)
-            if customer_id <= 0:
-                self.logger.warning(
-                    "任务缺少有效 customer_id，跳过: id=%s，可通过 mysql.test_customer_id 做测试注入",
-                    row.get("id"),
-                )
-                continue
-
-            industry_tag_raw = str(row.get(industry_tag_field, "") or "")
-            brand_tag_raw = str(row.get(brand_tag_field, "") or "")
-            industry_values = parse_tag_json_values(industry_tag_raw)
-            brand_values = parse_tag_json_values(brand_tag_raw)
-            industry_name = self.resolve_industry(industry_values)
-
-            # 所有任务都处理，不跳过任何行业
-            # 非支持行业（如数码）会在分类阶段直接归为 level=6
-            tasks.append(
-                TaskRecord(
-                    id=int(row.get("id", 0)),
-                    task_id=int(row.get(task_id_field, 0) or 0),
-                    customer_id=customer_id,
-                    task_type=int(row.get("task_type", 0) or 0),
-                    exec_status=int(row.get("exec_status", 0) or 0),
-                    industry_tag_raw=industry_tag_raw,
-                    brand_tag_raw=brand_tag_raw,
-                    industry_values=industry_values,
-                    brand_values=brand_values,
-                    industry_name=industry_name,
-                    raw=row,
-                )
+        customer_id = int(row.get(customer_field, 0) or fallback_customer_id or 0)
+        if customer_id <= 0:
+            self.logger.warning(
+                "任务缺少有效 customer_id，跳过: id=%s，可通过 mysql.test_customer_id 做测试注入",
+                row.get("id"),
             )
-        return tasks
+            return None
+
+        industry_tag_raw = str(row.get(industry_tag_field, "") or "")
+        brand_tag_raw = str(row.get(brand_tag_field, "") or "")
+        industry_values = parse_tag_json_values(industry_tag_raw)
+        brand_values = parse_tag_json_values(brand_tag_raw)
+        industry_name = self.resolve_industry(industry_values)
+
+        # 所有任务都处理，不跳过任何行业
+        # 非支持行业（如数码）会在分类阶段直接归为 level=6
+        return TaskRecord(
+            id=int(row.get("id", 0)),
+            task_id=int(row.get(task_id_field, 0) or 0),
+            customer_id=customer_id,
+            task_type=int(row.get("task_type", 0) or 0),
+            exec_status=int(row.get("exec_status", 0) or 0),
+            industry_tag_raw=industry_tag_raw,
+            brand_tag_raw=brand_tag_raw,
+            industry_values=industry_values,
+            brand_values=brand_values,
+            industry_name=industry_name,
+            raw=row,
+        )
 
     def fetch_pending_mids(
         self,

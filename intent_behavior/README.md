@@ -200,7 +200,6 @@ intent_behavior/
 │   ├── 10_multi_industry/             # 多行业统一测试
 │   │   └── test_multi_industry.py     # 汽车/奶茶行业测试
 │   ├── run_all_tests.py               # 单元测试套件一键运行
-│   ├── run_e2e_pipeline.py            # 端到端流水线（持续轮询 MySQL）
 │   ├── test_result_writer.py          # 回写接口单元测试
 │   └── test_video_duration.py         # 视频时长统计脚本
 ├── sql/
@@ -222,6 +221,8 @@ intent_behavior/
 │   ├── result.tsv                     # 分类结果（TSV 格式）
 │   └── run_classification_*.json      # 运行结果（JSON 格式）
 ├── run_classification.py              # 生产入口（推荐）
+├── run_e2e_pipeline.py                # 端到端流水线 v1（持续轮询 MySQL）
+├── run_single_task.py                 # 单任务流水线 v1（指定 task_id + 固定 mid 数）
 ├── worker.py                          # worker 入口（持续轮询）
 ├── main.py                            # 旧入口（single/batch/server）
 ├── requirements.txt                   # Python 依赖
@@ -403,13 +404,23 @@ python3 run_classification.py --mid 5239345868702306 --uid 7008866503
 
 ```bash
 # 持续轮询 MySQL 任务表，直到没有待处理任务
-python3 tests/run_e2e_pipeline.py
+python3 run_e2e_pipeline.py
 
 # 限制最大轮数
-python3 tests/run_e2e_pipeline.py --max-rounds 5
+python3 run_e2e_pipeline.py --max-rounds 5
 
 # 限制每轮处理的任务数
-python3 tests/run_e2e_pipeline.py --max-tasks-per-round 10
+python3 run_e2e_pipeline.py --max-tasks-per-round 10
+```
+
+### 7.2.1 指定任务处理（单任务流水线 v1）
+
+```bash
+# 处理指定 task_id 下固定数量（10 条）的待分类 mid，默认回写结果
+python3 run_single_task.py --task-id 1301222511089811457 --limit 10
+
+# 只分类不回写（试跑验证）
+python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --no-write-back
 ```
 
 ### 7.3 测试脚本
