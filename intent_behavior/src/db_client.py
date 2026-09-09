@@ -41,8 +41,15 @@ class TaskRecord:
     brand_tag_raw: str = ""
     industry_values: List[str] = field(default_factory=list)
     brand_values: List[str] = field(default_factory=list)
+    brand_tag_map: Dict[str, str] = field(default_factory=dict)
     industry_name: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
+
+    def resolve_brand_by_tag(self, tag: str) -> str:
+        """根据命中的 tag code（hit_mid_tag）从任务 brand_tag JSON 反解析品牌词。"""
+        if not tag:
+            return ""
+        return self.brand_tag_map.get(str(tag), "")
 
     @property
     def shard_index(self) -> int:
@@ -68,6 +75,7 @@ class MidRecord:
     forward_mid: str = ""
     forward_text: str = ""
     hit_mid_tag: str = ""
+    hit_brand_name: str = ""
     level: int = 0
     task_industry_name: str = ""
     task_brand_values: List[str] = field(default_factory=list)
@@ -244,6 +252,7 @@ class MySQLTaskRepository:
         brand_tag_raw = str(row.get(brand_tag_field, "") or "")
         industry_values = parse_tag_json_values(industry_tag_raw)
         brand_values = parse_tag_json_values(brand_tag_raw)
+        brand_tag_map = parse_tag_json_map(brand_tag_raw)
         industry_name = self.resolve_industry(industry_values)
 
         # 所有任务都处理，不跳过任何行业
@@ -258,6 +267,7 @@ class MySQLTaskRepository:
             brand_tag_raw=brand_tag_raw,
             industry_values=industry_values,
             brand_values=brand_values,
+            brand_tag_map=brand_tag_map,
             industry_name=industry_name,
             raw=row,
         )
@@ -398,6 +408,7 @@ class MySQLTaskRepository:
         forward_mid_field = self.config.get("shard_forward_mid_field", "forward_mid")
         forward_text_field = self.config.get("shard_forward_text_field", "forward_text")
         hit_mid_tag_field = self.config.get("shard_hit_mid_tag_field", "hit_mid_tag")
+        hit_mid_tag = str(row.get(hit_mid_tag_field, "") or "")
         return MidRecord(
             id=int(row.get("id", 0)),
             customer_id=int(row.get("customer_id", 0)),
@@ -409,12 +420,34 @@ class MySQLTaskRepository:
             mid_fids=str(row.get("mid_fids", "") or ""),
             forward_mid=str(row.get(forward_mid_field, "") or ""),
             forward_text=str(row.get(forward_text_field, "") or ""),
-            hit_mid_tag=str(row.get(hit_mid_tag_field, "") or ""),
+            hit_mid_tag=hit_mid_tag,
+            hit_brand_name=task.resolve_brand_by_tag(hit_mid_tag) if task else "",
             level=int(row.get("level", 0) or 0),
             task_industry_name=task.industry_name if task else "",
             task_brand_values=list(task.brand_values) if task else [],
             raw=row,
         )
+
+
+def parse_tag_json_map(raw: str) -> Dict[str, str]:
+    """解析 industry_tag / brand_tag 的 JSON map，返回 {tag: value} 完整映射。"""
+    if not raw:
+        return {}
+    text = str(raw).strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for key, value in data.items():
+        text_value = str(value).strip()
+        if text_value:
+            result[str(key)] = text_value
+    return result
 
 
 def parse_tag_json_values(raw: str) -> List[str]:

@@ -77,6 +77,7 @@ class ProcessResult:
     forward_content: str = ""
     forward_status: str = "not_forward"
     hit_mid_tag: str = ""
+    hit_brand_name: str = ""
     resolved: Optional[ResolvedBlog] = None
     timings: ProcessTimings = field(default_factory=ProcessTimings)
     write_back: bool = False
@@ -102,6 +103,7 @@ class ProcessResult:
             "forward_content": self.forward_content,
             "forward_status": self.forward_status,
             "hit_mid_tag": self.hit_mid_tag,
+            "hit_brand_name": self.hit_brand_name,
             "timings": self.timings.to_dict(),
             "write_back": self.write_back,
         }
@@ -149,6 +151,7 @@ class ClassifyPipeline:
         # 从 record 中提取 hit_mid_tag 和转发信息
         if record is not None:
             result.hit_mid_tag = record.hit_mid_tag or ""
+            result.hit_brand_name = record.hit_brand_name or ""
             result.forward_mid = record.forward_mid or ""
             result.forward_content = record.forward_text or ""
 
@@ -200,7 +203,11 @@ class ClassifyPipeline:
 
                 if record is not None:
                     item.industry_name = record.task_industry_name
-                    item.brand_values = list(record.task_brand_values)
+                    # 优先使用 hit_mid_tag 反解析出的“命中品牌词”；无命中时兼容回退到任务品牌词列表
+                    if record.hit_brand_name:
+                        item.brand_values = [record.hit_brand_name]
+                    else:
+                        item.brand_values = list(record.task_brand_values)
                     item.forward_mid = str(record.forward_mid or "")
                     item.forward_content = record.forward_text or ""
                     item.extra.update({
@@ -447,6 +454,7 @@ class ClassifyPipeline:
             f"  模式: {result.mode}",
             f"  行业: {result.industry_name}",
             f"  hit_mid_tag: {result.hit_mid_tag}",
+            f"  命中品牌词: {result.hit_brand_name or '无'}",
             f"  是否转发: {result.is_forward}",
             f"  原博文mid(forward_mid): {result.forward_mid}",
             f"  原博文内容: {(result.forward_content or '')[:120]}",
