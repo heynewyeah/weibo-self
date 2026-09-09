@@ -174,7 +174,14 @@ class MySQLShardWorker:
                              f"mid={record.mid} uid={record.mid_uid} "
                              f"forward_mid={record.forward_mid or '无'}")
 
-            outcome = self._process_record(task, record)
+            try:
+                outcome = self._process_record(task, record)
+            except KeyboardInterrupt:
+                self.logger.warning(
+                    "收到 Ctrl+C，当前 mid=%s 未完成；保留 level=0，停止本轮处理",
+                    record.mid,
+                )
+                raise
             if outcome == "success":
                 task_summary["success"] += 1
                 self.stats.success_count += 1
@@ -221,6 +228,9 @@ class MySQLShardWorker:
                 if process_result.fallback_level_written:
                     return "fallback"
                 return "success" if process_result.success else "fail"
+        except KeyboardInterrupt:
+            # 交给入口统一做审计 finalize 和进程退出；不能转成业务失败或回写 level=6。
+            raise
         except Exception as exc:
             self.logger.exception(
                 "记录处理异常 task_id=%s mid=%s error=%s",

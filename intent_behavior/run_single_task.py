@@ -170,6 +170,20 @@ def main():
                 total_fail += 1
                 logger.info(f"  └─ ❌ 失败  stage={result.error_stage or 'unknown'} "
                             f"error={(result.error or '')[:200]}")
+        except KeyboardInterrupt:
+            logger.warning(
+                "收到 Ctrl+C，当前 mid=%s 未完成；保留 level=0，停止单任务处理。",
+                record.mid,
+            )
+            pipeline.audit.finalize({
+                "mode": "single_task_interrupted",
+                "task_id": task.task_id,
+                "processed_success": total_success,
+                "processed_fallback": total_fallback,
+                "processed_fail": total_fail,
+                "skipped": total_skipped,
+            })
+            sys.exit(130)
         except Exception as exc:
             total_fail += 1
             logger.exception(f"  └─ ❌ 处理异常 mid={record.mid} error={exc}")

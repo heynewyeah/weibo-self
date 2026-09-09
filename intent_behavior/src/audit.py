@@ -31,7 +31,7 @@ class RunAudit:
         self.retention_days = int(cfg.get("retention_days", 30))
         self.mysql_enabled = bool(cfg.get("mysql_enabled", False))
         self.mysql_table = str(cfg.get("mysql_table", "nature_ad_mid_ai_audit"))
-        self.mysql_flush_batch_size = max(1, int(cfg.get("mysql_flush_batch_size", 20)))
+        self.mysql_flush_batch_size = max(1, int(cfg.get("mysql_flush_batch_size", 1)))
         self.mysql_cfg = config.get("mysql", {})
         self._db_rows = []
 
@@ -120,9 +120,13 @@ class RunAudit:
     def record_result(self, result, record=None) -> None:
         """记录一条 mid 的完整处理结果。"""
         status = (
-            "fallback"
-            if getattr(result, "fallback_level_written", False)
-            else ("success" if result.success else "failed")
+            "interrupted"
+            if getattr(result, "interrupted", False)
+            else (
+                "fallback"
+                if getattr(result, "fallback_level_written", False)
+                else ("success" if result.success else "failed")
+            )
         )
         task_id = str(record.super_task_id) if record is not None else ""
         self.counts[status] += 1
@@ -158,6 +162,7 @@ class RunAudit:
             "model_output": model_output,
             "timings_ms": result.timings.to_dict(),
             "fallback_level_written": bool(getattr(result, "fallback_level_written", False)),
+            "interrupted": bool(getattr(result, "interrupted", False)),
         }
         self.write_event("mid_processed", payload)
         # MySQL 审计表面向分表消费记录，字段要求 customer/task/record 均存在。

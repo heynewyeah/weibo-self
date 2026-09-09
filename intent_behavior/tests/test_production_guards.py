@@ -243,6 +243,43 @@ class ProductionGuardTests(unittest.TestCase):
         )
         audit._queue_db_result.assert_not_called()
 
+    def test_keyboard_interrupt_is_not_fallback_level_six(self):
+        pipeline = ClassifyPipeline(minimal_config())
+        pipeline.repo = MagicMock()
+        pipeline.resolver = MagicMock()
+        pipeline.resolver.resolve.return_value = MagicMock(
+            uid="u",
+            content="测试正文",
+            pic_ids=[],
+            video_fid="",
+            video_cover_url="",
+            has_image=lambda: False,
+            has_video=lambda: False,
+            to_blog_item=lambda: BlogItem(mid="m", uid="u", content="测试正文"),
+        )
+        pipeline.classifier = MagicMock()
+        pipeline.classifier.other_label = "其他"
+        pipeline.classifier.classify_item.side_effect = KeyboardInterrupt()
+
+        with self.assertRaises(KeyboardInterrupt):
+            pipeline.process_one("m", uid="u", write_back=True, record=make_record())
+
+        # Ctrl+C 不能调用 level=6 兜底回写。
+        pipeline.repo.update_level_result.assert_not_called()
+
+    def test_mysql_audit_flushes_each_record_by_default(self):
+        from src.audit import RunAudit
+
+        config = minimal_config()
+        config["audit"] = {"enabled": False, "mysql_enabled": True}
+        audit = RunAudit(config)
+        audit.flush_db = MagicMock()
+        audit.record_result(
+            ProcessResult(mid="m", uid="u", mode="auto", success=True),
+            record=make_record(),
+        )
+        audit.flush_db.assert_called_once()
+
     def test_video_over_300_seconds_skips_frames(self):
         from src.media_handler import VideoHandler
 

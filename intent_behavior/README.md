@@ -411,6 +411,10 @@ python3 run_single_task.py --task-id 1301222511089811457 --limit 10
 
 # 指定任务受控回写（排障使用；持续正式处理仍使用 worker.py）
 python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --write-back
+
+# 指定一个 mid 的预演 / 受控回写
+python3 scripts/manual_classify_mid.py --task-id 1301222511089811457 --mid <mid>
+python3 scripts/manual_classify_mid.py --task-id 1301222511089811457 --mid <mid> --write-back
 ```
 
 `run_e2e_pipeline.py` 为历史兼容脚本，已弃用，不能作为部署入口。

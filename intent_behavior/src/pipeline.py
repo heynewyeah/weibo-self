@@ -85,6 +85,8 @@ class ProcessResult:
     # 业务处理失败后，如果已按约定回写 level=6，则该条不再会以 level=0 反复消费。
     # `success` 仍表示最终链路已完成；真实失败阶段保留在 error_stage/error 中供审计追溯。
     fallback_level_written: bool = False
+    # 人工 Ctrl+C 中止不是业务分类失败，不能回写 level=6。
+    interrupted: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -111,6 +113,7 @@ class ProcessResult:
             "timings": self.timings.to_dict(),
             "write_back": self.write_back,
             "fallback_level_written": self.fallback_level_written,
+            "interrupted": self.interrupted,
         }
 
 
@@ -258,6 +261,15 @@ class ClassifyPipeline:
                     raise
                 result.timings.writeback_ms = (time.perf_counter() - t_writeback_start) * 1000
 
+        except KeyboardInterrupt:
+            # Ctrl+C 可能发生在反解、下载、模型调用或回写等待期间。
+            # 这是人工终止，不是“内容分类失败”，必须保持 level=0 以便下次 worker 继续处理。
+            result.success = False
+            result.interrupted = True
+            result.error_stage = "interrupted"
+            result.error = "运行被人工中止（Ctrl+C）；未将此 mid 回写为 level=6"
+            self.logger.warning("当前 mid 被人工中止，保留 level=0 等待下次处理: %s", mid)
+            raise
         except Exception:
             result.success = False
             if not result.error:
@@ -274,7 +286,8 @@ class ClassifyPipeline:
             # 分类失败可按业务约定写 level=6，避免记录一直停留在 level=0。
             # 回写本身失败时不能再改写为 6：原请求可能已在服务端异步生效，
             # 此时贸然补 6 会与原目标层级产生竞态，需保留 level=0 并按审计排障。
-            if not result.success and result.error_stage != "writeback":
+            # 人工中止同样不能补写 6：下次启动应继续处理该 level=0 记录。
+            if not result.success and result.error_stage not in {"writeback", "interrupted"}:
                 self._write_failure_fallback_level(
                     result=result,
                     record=record,

@@ -340,7 +340,8 @@ audit:
   # 已创建审计表；保留结构化审计，便于按 task/mid 查询历史。
   mysql_enabled: true
   mysql_table: "nature_ad_mid_ai_audit"
-  mysql_flush_batch_size: 20
+  # 每条处理结果立即写入审计表。这样 Ctrl+C 中止时，已完成记录不会因等待批量 flush 而丢失。
+  mysql_flush_batch_size: 1
   # 由 scripts/cleanup_mysql_audit.py --execute 每日低峰分批清理。
   mysql_retention_days: 90
   mysql_cleanup_batch_size: 10000

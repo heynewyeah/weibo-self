@@ -18,6 +18,7 @@ python3 worker.py --config config/config.yaml
 | --- | --- | --- |
 | `production_preflight.py` | 上线前只读检查路由字段、分表、重复数据和索引 | `python3 scripts/production_preflight.py --strict` |
 | `cleanup_mysql_audit.py` | 预览/分批清理过期 MySQL 运行审计 | `python3 scripts/cleanup_mysql_audit.py --execute` |
+| `manual_classify_mid.py` | 指定一个 task_id + mid 预演、受控分类或回写 | `python3 scripts/manual_classify_mid.py --task-id <id> --mid <mid>` |
 | `count_xlsx_mids.py` | 查询 Excel 博文对应的 mid 并输出映射文件 | `python3 scripts/count_xlsx_mids.py --help` |
 | `batch_classify_3layer.sh` | 历史 Hive 批量分类辅助脚本；不用于 MySQL 正式回写 | 见脚本文件头 |
 | `run_hive.sh` | 历史 Hive 数据准备辅助脚本；不用于 MySQL 正式回写 | 见脚本文件头 |

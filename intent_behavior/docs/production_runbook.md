@@ -12,6 +12,7 @@ python3 worker.py --config config/config.yaml
 `worker.py` 是唯一允许持续 MySQL 回写的生产入口。
 
 - `run_single_task.py`：单任务联调/排障，默认不回写；需显式传 `--write-back`。
+- `scripts/manual_classify_mid.py`：指定单个 task_id + mid 的人工排障/受控回写脚本；默认不回写。
 - `run_classification.py`：本地文件、单条、只读预演；MySQL 模式禁止回写。
 - `run_e2e_pipeline.py`：历史兼容入口，已弃用，不部署。
 - `tests/`：测试脚本；`scripts/`：运维、自检与数据辅助脚本。
@@ -73,6 +74,22 @@ super_mid_task.operator_uid（即 customer_id）
    ```
 
    默认每 10 秒查询一轮有效任务和 `level=0` 数据，直到人工按 `Ctrl+C` 停止。
+
+## 人工中止与指定 mid 复测
+
+- `Ctrl+C` 发生在某条处理中时，该条不视为业务分类失败，保持 `level=0`；下次启动 worker 会重新处理。
+- 已完成并成功回写的前序 mid 不受影响。
+- 每条审计立即写入 MySQL；被打断的当前 mid 写入本地 JSONL 的 `interrupted` 记录。
+- 若旧版本曾把人工中止错误回写为 `level=6`，只能由人工用下方命令受控恢复；脚本只允许 `6 → 0`，绝不修改 `1/2/3`：
+
+  ```bash
+  # 先只预演
+  python3 scripts/manual_classify_mid.py --task-id <task_id> --mid <mid>
+
+  # 确认后恢复 level=6 为 0，再分类并回写
+  python3 scripts/manual_classify_mid.py \
+    --task-id <task_id> --mid <mid> --retry-level-6 --write-back
+  ```
 
 ## 路由与业务规则
 

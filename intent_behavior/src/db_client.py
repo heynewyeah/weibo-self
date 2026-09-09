@@ -352,6 +352,69 @@ class MySQLTaskRepository:
 
         return [self._row_to_mid_record(row, task=task) for row in rows]
 
+    def fetch_mid_by_value(
+        self,
+        conn,
+        task: TaskRecord,
+        mid: str,
+    ) -> Optional[MidRecord]:
+        """
+        按 task + mid 精确读取一条分表记录，不限制 level。
+
+        仅供人工排障/受控重跑脚本使用；正式 worker 始终只拉取 level=0。
+        数据库唯一约束保证同一 customer/task/mid 最多一条。
+        """
+        table = task.shard_table
+        if not self.table_exists(conn, table):
+            self.logger.warning("分表不存在，跳过: %s", table)
+            return None
+
+        task_match_field = self.config.get("shard_task_match_field", "super_task_id")
+        task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
+        sql = f"""
+        SELECT *
+        FROM {table}
+        WHERE customer_id = %s
+          AND {task_match_field} = %s
+          AND mid = %s
+        LIMIT 1
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, (task.customer_id, task_match_value, str(mid)))
+            row = cur.fetchone()
+        return self._row_to_mid_record(row, task=task) if row else None
+
+    def reset_to_pending_for_manual_retry(self, record: MidRecord) -> bool:
+        """
+        将“人工确认需要重跑”的 level=6 记录恢复为 level=0。
+
+        这是受控人工操作，不能由正式 worker 自动调用。只允许从 level=6 恢复，
+        防止意外覆盖已提供给客户的 1/2/3 结果。
+        """
+        table = f"{self.config.get('shard_table_prefix', 'nature_ad_super_mid_')}{record.customer_id % 20}"
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {table}
+                    SET level = %s
+                    WHERE id = %s
+                      AND customer_id = %s
+                      AND super_task_id = %s
+                      AND mid = %s
+                      AND level = %s
+                    """,
+                    (
+                        self.pending_level,
+                        record.id,
+                        record.customer_id,
+                        record.super_task_id,
+                        record.mid,
+                        6,
+                    ),
+                )
+                return cur.rowcount == 1
+
     def fetch_pending_mids_by_table(
         self,
         conn,

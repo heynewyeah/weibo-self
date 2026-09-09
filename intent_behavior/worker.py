@@ -65,12 +65,18 @@ def main():
     )
 
     worker = create_worker(config, logger)
-    if args.once:
-        summary = worker.run_once()
-        worker.pipeline.audit.finalize({"worker_summary": summary, "mode": "once"})
-        print(summary)
-    else:
-        worker.run_forever()
+    try:
+        if args.once:
+            summary = worker.run_once()
+            worker.pipeline.audit.finalize({"worker_summary": summary, "mode": "once"})
+            print(summary)
+        else:
+            worker.run_forever()
+    except KeyboardInterrupt:
+        # 对 --once 也保证 Ctrl+C 时写入运行结束审计；当前被打断的 mid 保持 level=0。
+        logger.warning("收到 Ctrl+C，worker 已停止；未完成 mid 保持 level=0，下一次会继续处理。")
+        worker.pipeline.audit.finalize({"mode": "interrupted", "reason": "keyboard_interrupt"})
+        sys.exit(130)
 
 
 if __name__ == "__main__":
