@@ -5,7 +5,7 @@
 import os
 import re
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -14,27 +14,23 @@ def setup_logger(
     name: str = "classifier",
     log_dir: str = "logs",
     level: str = "INFO",
-    max_bytes: int = 10 * 1024 * 1024,  # 10MB
-    backup_count: int = 5,
+    retention_days: int = 30,
 ) -> logging.Logger:
     """
     初始化日志器，同时输出到控制台和文件。
 
-    文件日志使用 RotatingFileHandler 自动轮转：
-    - 单个文件最大 max_bytes（默认 10MB）
-    - 保留 backup_count 个历史文件（默认 5 个）
-    - 日志存放位置：{log_dir}/classify.log
-      轮转后自动命名为 classify.log.1, classify.log.2, ...
+    文件日志按自然日自动轮转，默认保留 30 天：
+    - 当前日志：{log_dir}/{name}.log
+    - 历史日志：{name}.log.YYYY-MM-DD
 
     Args:
         name: 日志器名称
         log_dir: 日志目录
         level: 日志级别
-        max_bytes: 单个日志文件最大字节数
-        backup_count: 保留的历史文件数量
+        retention_days: 保留的历史天数
     """
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "classify.log")
+    log_file = os.path.join(log_dir, f"{name}.log")
 
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -51,10 +47,11 @@ def setup_logger(
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    file_handler = RotatingFileHandler(
+    file_handler = TimedRotatingFileHandler(
         log_file,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
+        when="midnight",
+        interval=1,
+        backupCount=retention_days,
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
@@ -132,10 +129,11 @@ def extract_forward_status(model_output: str) -> Optional[str]:
         if value in {"异常", "正常"}:
             return value
 
+    # 宽松输出只做“明确正常”识别；不能因为“未发现异常/不存在异常”包含“异常”
+    # 两个字，就反向误判为异常。异常必须由严格标签格式确认。
     text = model_output.strip()
-    if "异常" in text:
-        return "异常"
-    if "正常" in text:
+    normal_markers = ("未发现异常", "不存在异常", "无异常", "正常转发", "判断正常")
+    if any(marker in text for marker in normal_markers):
         return "正常"
     return None
 

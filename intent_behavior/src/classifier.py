@@ -57,6 +57,7 @@ class BlogClassifier:
 
         self.error_file = config["logging"].get("error_file", "logs/error_records.tsv")
         self.result_file = config["logging"].get("result_file", "output/result.tsv")
+        self.write_legacy_tsv = bool(config["logging"].get("write_legacy_tsv", False))
 
     def _resolve_industry(self, item: BlogItem) -> str:
         """
@@ -91,28 +92,37 @@ class BlogClassifier:
     def _format_brand_terms(self, item: BlogItem) -> str:
         return "、".join(item.brand_values) if item.brand_values else "无"
 
+    @staticmethod
+    def _format_author_context(item: BlogItem) -> str:
+        author_name = str(item.extra.get("author_name", "") or "").strip()
+        return author_name or "未知"
+
     def _build_prompt_pack(self, item: BlogItem, media_type: str) -> Tuple[str, str, str]:
         industry_name = self._resolve_industry(item)
         industry_prompts = self.prompts["industries"][industry_name]
         brand_terms = self._format_brand_terms(item)
+        author_name = self._format_author_context(item)
         content = item.content or ""
 
         if media_type == MediaType.IMAGE:
             user_prompt = industry_prompts["user_image_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                author_name=author_name,
                 content=content,
             )
         elif media_type == MediaType.VIDEO:
             user_prompt = industry_prompts["user_video_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                author_name=author_name,
                 content=content,
             )
         else:
             user_prompt = industry_prompts["user_text_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                author_name=author_name,
                 content=content,
             )
         return industry_name, industry_prompts["system_prompt"], user_prompt
@@ -132,9 +142,11 @@ class BlogClassifier:
 
         industry_name = self._resolve_industry(item)
         brand_terms = self._format_brand_terms(item)
+        author_name = self._format_author_context(item)
         prompt = self.prompts["forward_review_prompt"].format(
             industry=industry_name,
             brand_terms=brand_terms,
+            author_name=author_name,
             content=item.content or "",
             forward_content=item.forward_content or "",
         )
@@ -149,6 +161,23 @@ class BlogClassifier:
         if forward_status == "异常":
             return True, "abnormal", model_output
         return False, "normal", model_output
+
+    @staticmethod
+    def _compose_forward_content(item: BlogItem) -> str:
+        """
+        正常转发的分层输入。
+
+        产品规则要求同时考虑转发者表达与原博信息；保留明确边界，避免模型把二者混成
+        同一发布主体。媒体仍只使用当前转发博文的媒体，原博媒体目前未另行下载。
+        """
+        if not item.has_forward():
+            return item.content or ""
+        return (
+            "【转发者正文】\n"
+            f"{item.content or '（无文字）'}\n\n"
+            "【被转发原博文正文】\n"
+            f"{item.forward_content or '（无正文）'}"
+        )
 
     def _is_trivial_content(self, content: str) -> bool:
         """
@@ -213,25 +242,6 @@ class BlogClassifier:
         media_type = self.detect_media_type(item)
         industry_name = self._resolve_industry(item)
 
-        # 超短内容 / 纯表情 / 纯话题 → 归为"其他"（有效业务结果）
-        if self._is_trivial_content(item.content):
-            self.logger.info(
-                f"内容过短或无意义 mid={item.mid}，归为其他"
-            )
-            return ClassifyResult(
-                mid=item.mid,
-                uid=item.uid,
-                layer=self.other_label,
-                media_type=media_type,
-                success=True,
-                error="",
-                model_output="内容过短或无意义（<6字/纯表情/纯话题），归为其他",
-                industry_name=industry_name or item.industry_name or "",
-                is_forward=item.has_forward(),
-                forward_mid=item.forward_mid,
-                forward_status="not_forward",
-            )
-
         # 行业不支持时（非汽车/奶茶/空），直接返回"其他"作为有效业务结果（level=6）
         if not self._is_supported_industry(industry_name):
             self.logger.info(
@@ -285,7 +295,30 @@ class BlogClassifier:
                     industry_name=industry_name,
                     is_forward=True,
                     forward_mid=item.forward_mid,
-                    forward_status="abnormal",
+                    forward_status=forward_status,
+                )
+                self._persist_result(result)
+                return result
+
+            # 正常转发按“转发正文 + 原博正文”综合分层。原博缺失在上面的审查步骤已归其他。
+            if item.has_forward() and forward_status == "normal":
+                item.content = self._compose_forward_content(item)
+
+            # 非转发文本，或合并后的转发文本无意义，归为其他。
+            if self._is_trivial_content(item.content):
+                self.logger.info(f"内容过短或无意义 mid={item.mid}，归为其他")
+                result = ClassifyResult(
+                    mid=item.mid,
+                    uid=item.uid,
+                    layer=self.other_label,
+                    media_type=media_type,
+                    success=True,
+                    error="",
+                    model_output="内容过短或无意义（<6字/纯表情/纯话题），归为其他",
+                    industry_name=industry_name or item.industry_name or "",
+                    is_forward=item.has_forward(),
+                    forward_mid=item.forward_mid,
+                    forward_status=forward_status,
                 )
                 self._persist_result(result)
                 return result
@@ -517,16 +550,18 @@ class BlogClassifier:
                 f"分类完成 mid={result.mid} industry={result.industry_name} layer={result.layer} "
                 f"forward_status={result.forward_status}"
             )
-            write_result(self.result_file, result.mid, result.uid, result.layer, result.media_type)
+            if self.write_legacy_tsv:
+                write_result(self.result_file, result.mid, result.uid, result.layer, result.media_type)
         else:
             self.logger.warning(f"分类失败 mid={result.mid} error={result.error}")
-            write_error_record(
-                self.error_file,
-                result.mid,
-                result.uid,
-                result.media_type,
-                f"{result.error} | output={result.model_output[:200]}",
-            )
+            if self.write_legacy_tsv:
+                write_error_record(
+                    self.error_file,
+                    result.mid,
+                    result.uid,
+                    result.media_type,
+                    f"{result.error} | output={result.model_output[:200]}",
+                )
 
     @staticmethod
     def _cleanup_files(paths: List[str], dir_path: Optional[str] = None):

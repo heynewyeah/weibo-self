@@ -1,7 +1,7 @@
 # 意图行为项目 - 博文营销分层分类服务
 
-> **最后更新**: 2026-09-03  
-> **项目状态**: 生产可用，持续优化中  
+> **最后更新**: 2026-09-09
+> **项目状态**: 上线前改造中。正式运行说明见 [`docs/production_runbook.md`](docs/production_runbook.md)。
 > **适用场景**: 微博博文营销分层分类（汽车/奶茶行业）
 
 ---
@@ -65,19 +65,18 @@
 | mid 反解 | ✅ 完成 | 调用微博内部接口获取真实 content/pid/fid |
 | MySQL 任务驱动 | ✅ 完成 | super_mid_task → nature_ad_super_mid_x 路由 |
 | HTTP 结果回写 | ✅ 完成 | POST /api/v1/super-mid/update-level |
-| 行级锁 | ✅ 完成 | SELECT ... FOR UPDATE，防止多 worker 重复处理 |
-| 日志轮转 | ✅ 完成 | RotatingFileHandler，单文件 10MB，保留 5 个历史 |
-| 反解失败汇总 | ✅ 完成 | 单文件追加模式，含表头和重试次数统计 |
+| 多 worker 防重 | ✅ 完成 | MySQL 命名锁 + level=0 二次确认，不持有长事务行锁 |
+| 运行审计 | ✅ 完成 | 每次运行独立 JSONL/汇总文件，记录 task/mid/结果/耗时/错误 |
+| 日志轮转 | ✅ 完成 | 按天轮转，默认保留 30 天 |
 | 视频时长统计 | ✅ 完成 | 独立脚本，统计视频博文时长分布 |
 
 ### 2.2 待优化项
 
 | 项目 | 优先级 | 说明 |
 |------|--------|------|
-| 回写接口超时问题 | 🔴 高 | 需与接口提供方（王燕威）确认服务状态 |
-| 失败状态是否回写 | 🟡 中 | 需与产品确认是否回写 level 表示失败 |
-| 多行业测试覆盖 | 🟡 中 | 需补充奶茶行业的完整测试用例 |
-| 并发回写支持 | 🟢 低 | 当前 workers>1 时不支持回写，后续可优化 |
+| 分表唯一约束与组合索引 | 🔴 高 | 见 `sql/production_schema_migration.sql`，上线前由 DBA 执行/确认 |
+| MySQL 审计表 | 🟡 中 | 已提供建表与可选写入开关，建议上线前启用 |
+| 多行业测试覆盖 | 🟡 中 | 需补充奶茶行业的完整标注回归集 |
 
 ---
 
@@ -133,11 +132,11 @@ mid 反解 → 转发判断 → 分类 → 临时文件清理 → HTTP 回写
 
 **解决**：从 MySQL 读取所有 mid，通过 mid 反解接口获取 `video.fid`，自动判断是否为视频博文。
 
-### 3.5 SKIP LOCKED 语法不支持
+### 3.5 长事务行锁问题
 
-**问题**：MySQL 5.7 不支持 `SELECT ... FOR UPDATE SKIP LOCKED`（MySQL 8.0+ 特性）。
+**问题**：外部反解、媒体下载、模型推理期间持有 `SELECT ... FOR UPDATE` 会阻塞其他 worker，视频场景尤其明显。
 
-**解决**：改为 `SELECT ... FOR UPDATE`，虽然会阻塞其他 worker，但保证不会重复处理。
+**解决**：短事务读取待处理记录；实际处理前使用 MySQL 命名锁互斥，并二次确认记录仍为 `level=0`。
 
 ### 3.6 回写接口超时
 
@@ -161,7 +160,7 @@ intent_behavior/
 │   ├── api_client.py                  # vLLM API 客户端（文本+多模态请求，重试机制）
 │   ├── classifier.py                  # 核心分类器（行业感知、转发判断、自动路由）
 │   ├── data_extractor.py              # 数据提取器（Hive/本地/HDFS）
-│   ├── db_client.py                   # MySQL 任务仓储（任务查询、分表路由、行级锁）
+│   ├── db_client.py                   # MySQL 任务仓储（任务查询、分表路由、命名锁）
 │   ├── media_handler.py               # 媒体处理器（图片下载、视频抽帧/封面）
 │   ├── mid_resolver.py                # mid 反解客户端（获取真实 content/pid/fid）
 │   ├── models.py                      # 数据模型（BlogItem、ClassifyResult、MidRecord）
@@ -213,15 +212,15 @@ intent_behavior/
 │   ├── mysql_worker_spec.md           # MySQL worker 规格说明
 │   └── upstream_data_spec.md          # 上游数据规范
 ├── logs/                              # 日志目录（自动轮转）
-│   ├── classify.log                   # 主日志（RotatingFileHandler）
-│   ├── classify.log.1                 # 历史日志
+│   ├── <logger>.log                   # 主日志（按天轮转）
+│   ├── <logger>.log.YYYY-MM-DD        # 历史日志
 │   ├── YYYYMMDD_error.log             # 每日错误日志
-│   └── 反解失败汇总.txt                # 反解失败汇总（单文件追加）
+│   └── runs/YYYYMMDD/                 # 运行级 JSONL 审计与汇总（保留 30 天）
 ├── output/                            # 输出目录
-│   ├── result.tsv                     # 分类结果（TSV 格式）
+│   ├── result.tsv                     # 旧 TSV 调试兼容（正式默认不写）
 │   └── run_classification_*.json      # 运行结果（JSON 格式）
-├── run_classification.py              # 生产入口（推荐）
-├── run_e2e_pipeline.py                # 端到端流水线 v1（持续轮询 MySQL）
+├── run_classification.py              # 本地/只读预演入口
+├── run_e2e_pipeline.py                # 历史入口（已弃用，不部署）
 ├── run_single_task.py                 # 单任务流水线 v1（指定 task_id + 固定 mid 数）
 ├── worker.py                          # worker 入口（持续轮询）
 ├── main.py                            # 旧入口（single/batch/server）
@@ -237,23 +236,23 @@ intent_behavior/
 ### 5.1 任务驱动模式（生产环境）
 
 ```
-super_mid_task (任务表)
+super_mid_task.operator_uid（任务表中的 customer_id）
     ↓
 解析 industry_tag / brand_tag (JSON)
     ↓
-根据 customer_id % 20 路由到 nature_ad_super_mid_x (分表)
+根据 operator_uid（即 customer_id）% 20 路由到 nature_ad_super_mid_x (分表)
     ↓
 读取 level=0 的记录
     ↓
 mid 反解 → 获取真实 content/pid/fid
     ↓
-转发判断 → 异常归为 level=6，正常继续
+转发判断 → 原博为空/明确异常归为 level=6；正常按“转发正文 + 原博正文”继续
     ↓
 行业判断 → 非支持行业归为 level=6，支持行业继续
     ↓
 分类 → 调用 Qwen3.6-35B-A3B 模型
     ↓
-HTTP 回写 → POST /api/v1/super-mid/update-level
+HTTP 回写 → POST /api/v1/super-mid/update-level → 超时/data=0 时只读确认最终 level
 ```
 
 ### 5.2 任务筛选条件
@@ -387,52 +386,48 @@ prompts:
 
 ## 七、使用方法
 
-### 7.1 生产环境（推荐）
+### 7.1 生产环境（唯一正式入口）
 
 ```bash
-# 从任务表驱动执行（持续轮询）
-python3 run_classification.py --from-tasks --limit 100 --mode auto --write-back
+# 上线前只读检查（--strict 会把索引缺失视为失败）
+python3 scripts/production_preflight.py --strict
 
-# 直接从分表读取执行
-python3 run_classification.py --shard-index 1 --customer-id 2608812381 --limit 100 --mode auto --write-back
+# 小批量验证：仅一轮轮询
+python3 worker.py --config config/config.yaml --once
 
-# 单条调试
+# 正式持续消费
+python3 worker.py --config config/config.yaml
+```
+
+### 7.2 预演与排障入口
+
+```bash
+# 单条/文件/分表只读预演
 python3 run_classification.py --mid 5239345868702306 --uid 7008866503
-```
+python3 run_classification.py --from-tasks --limit 10 --mode auto
 
-### 7.2 持续轮询模式
-
-```bash
-# 持续轮询 MySQL 任务表，直到没有待处理任务
-python3 run_e2e_pipeline.py
-
-# 限制最大轮数
-python3 run_e2e_pipeline.py --max-rounds 5
-
-# 限制每轮处理的任务数
-python3 run_e2e_pipeline.py --max-tasks-per-round 10
-```
-
-### 7.2.1 指定任务处理（单任务流水线 v1）
-
-```bash
-# 处理指定 task_id 下固定数量（10 条）的待分类 mid，默认回写结果
+# 指定任务预演（默认不回写）
 python3 run_single_task.py --task-id 1301222511089811457 --limit 10
 
-# 只分类不回写（试跑验证）
-python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --no-write-back
+# 指定任务受控回写（排障使用；持续正式处理仍使用 worker.py）
+python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --write-back
 ```
+
+`run_e2e_pipeline.py` 为历史兼容脚本，已弃用，不能作为部署入口。
 
 ### 7.3 测试脚本
 
 ```bash
+# 生产保护离线单元测试（不访问外部服务）
+python3 -m unittest tests.test_production_guards -v
+
 # 单元测试套件
 python3 tests/run_all_tests.py
 
-# 回写接口测试
+# 回写接口连通性测试（会发送真实回写请求，仅使用专用测试数据）
 python3 tests/test_result_writer.py --mid 5333296278144730 --customer-id 2608812381 --task-id 1301222511089811457 --level 6
 
-# 视频时长统计
+# 视频时长统计（测试/数据辅助）
 python3 tests/test_video_duration.py --from-mysql --shard-index 1 --limit 20
 
 # 多行业测试
@@ -458,18 +453,18 @@ bash sql/query_task-查询有效任务.sh
 
 | 文件 | 说明 |
 |------|------|
-| `output/run_classification_<timestamp>.json` | 完整结果（JSON 格式） |
-| `output/run_classification_<timestamp>_summary.txt` | 运行摘要 |
-| `output/result.tsv` | 分类结果（TSV 格式） |
+| `logs/runs/YYYYMMDD/<run_id>.jsonl` | 每条 mid 的 task、结果、阶段耗时、异常、模型输出（默认保留 30 天） |
+| `logs/runs/YYYYMMDD/<run_id>_summary.json` | 本次运行/任务的汇总（默认保留 30 天） |
+| `nature_ad_mid_ai_audit` | 可选 MySQL 审计表；建表并开启后可按 task/mid 查询 |
 
 ### 8.2 日志文件
 
 | 文件 | 说明 |
 |------|------|
-| `logs/classify.log` | 主日志（RotatingFileHandler，单文件 10MB，保留 5 个历史） |
-| `logs/classify.log.1` ~ `classify.log.5` | 历史日志 |
+| `logs/<logger>.log` | 主运行日志，按自然日轮转，默认保留 30 天 |
+| `logs/<logger>.log.YYYY-MM-DD` | 历史运行日志 |
 | `logs/YYYYMMDD_error.log` | 每日错误日志 |
-| `logs/反解失败汇总.txt` | 反解失败汇总（单文件追加，含表头和重试次数） |
+| `logs/反解失败汇总.txt` | 历史兼容汇总；精确追溯以 JSONL 审计为准 |
 
 ### 8.3 测试输出
 

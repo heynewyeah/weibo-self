@@ -2,11 +2,11 @@
 pyyaml>=6.0
 requests>=2.28.0
 pymysql>=1.1.0
+opencv-python-headless>=4.8.0
 
 # 类型安全与数据校验（可选，后续可启用 pydantic 做严格校验）
 # pydantic>=2.0
 
-# 视频处理（视频功能启用后需要）
-# opencv-python>=4.8.0
+# 视频处理默认使用抽帧模式，opencv-python-headless 为生产必需依赖。
 # imageio>=2.31.0
 # imageio-ffmpeg>=0.4.9

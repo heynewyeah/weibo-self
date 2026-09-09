@@ -29,6 +29,7 @@ import time
 from .classifier import BlogClassifier
 from .db_client import MySQLTaskRepository, MidRecord
 from .mid_resolver import MidResolverClient, ResolvedBlog
+from .audit import RunAudit
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -81,6 +82,9 @@ class ProcessResult:
     resolved: Optional[ResolvedBlog] = None
     timings: ProcessTimings = field(default_factory=ProcessTimings)
     write_back: bool = False
+    # 业务处理失败后，如果已按约定回写 level=6，则该条不再会以 level=0 反复消费。
+    # `success` 仍表示最终链路已完成；真实失败阶段保留在 error_stage/error 中供审计追溯。
+    fallback_level_written: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -106,6 +110,7 @@ class ProcessResult:
             "hit_brand_name": self.hit_brand_name,
             "timings": self.timings.to_dict(),
             "write_back": self.write_back,
+            "fallback_level_written": self.fallback_level_written,
         }
 
 
@@ -131,6 +136,8 @@ class ClassifyPipeline:
         )
 
         self.classifier = BlogClassifier(config, self.logger)
+        self.audit = RunAudit(config, self.logger)
+        self._cleanup_expired_cache()
 
         self.repo: Optional[MySQLTaskRepository] = None
         mysql_cfg = config.get("mysql")
@@ -166,27 +173,14 @@ class ClassifyPipeline:
             except Exception as e:
                 result.error = f"反解失败: {str(e)}"
                 result.error_stage = "resolve"
-                # 反解失败 → 写入反解失败汇总 + 归为其他(level=6) + 标记失败
+                # 反解失败是终态业务兜底：若允许回写，则写 level=6；审计仍保留 resolve 失败。
                 self._write_resolve_fail_log(result, record)
                 result.layer = self.classifier.other_label
                 result.success = False
                 result.industry_name = record.task_industry_name if record else ""
                 result.forward_status = "not_forward"
-                # 尝试回写 level=6
-                if write_back and record is not None and self.repo is not None:
-                    try:
-                        from .models import ClassifyResult as CR
-                        fake_result = CR(
-                            mid=mid, uid=uid or "", layer=self.classifier.other_label,
-                            media_type="unknown", success=True,
-                            industry_name=result.industry_name,
-                        )
-                        self.repo.update_level_result(None, record, fake_result)
-                    except Exception as wb_e:
-                        self.logger.warning(f"反解失败回写 level=6 也失败 mid={mid}: {wb_e}")
                 result.timings.resolve_ms = (time.perf_counter() - t_resolve_start) * 1000
                 result.timings.total_ms = (time.perf_counter() - t_total_start) * 1000
-                self._log_result(result)
                 return result
 
             result.timings.resolve_ms = (time.perf_counter() - t_resolve_start) * 1000
@@ -214,6 +208,7 @@ class ClassifyPipeline:
                         "row_id": record.id,
                         "customer_id": record.customer_id,
                         "super_task_id": record.super_task_id,
+                        "author_name": record.mid_uid_name,
                         "source": "mysql_shard",
                         "has_forward": record.has_forward(),
                     })
@@ -276,12 +271,71 @@ class ClassifyPipeline:
             result.timings.cleanup_ms = (time.perf_counter() - t_cleanup_start) * 1000
             result.timings.total_ms = (time.perf_counter() - t_total_start) * 1000
 
-            if not result.success:
+            # 分类失败可按业务约定写 level=6，避免记录一直停留在 level=0。
+            # 回写本身失败时不能再改写为 6：原请求可能已在服务端异步生效，
+            # 此时贸然补 6 会与原目标层级产生竞态，需保留 level=0 并按审计排障。
+            if not result.success and result.error_stage != "writeback":
+                self._write_failure_fallback_level(
+                    result=result,
+                    record=record,
+                    write_back=write_back,
+                )
+
+            if result.error_stage:
                 self._write_error_log(result)
 
             self._log_result(result)
+            self.audit.record_result(result, record)
 
         return result
+
+    def _write_failure_fallback_level(
+        self,
+        result: ProcessResult,
+        record: Optional[MidRecord],
+        write_back: bool,
+    ) -> None:
+        """
+        将可确认的处理失败终态写为 level=6。
+
+        约束：
+        - 仅生产回写链路且有分表记录时执行；
+        - 只用于反解/分类等处理失败，不用于 HTTP 回写失败；
+        - 下游仅更新 level=0，因此并发实例已处理的记录不会被覆盖；
+        - 审计仍保留原 error_stage/error，不能把 fallback 当作正常模型分类。
+        """
+        if result.fallback_level_written or not write_back or record is None or self.repo is None:
+            return
+        try:
+            from .models import ClassifyResult as ClassificationResult
+
+            t_writeback_start = time.perf_counter()
+            fallback = ClassificationResult(
+                mid=result.mid,
+                uid=result.uid,
+                layer=self.classifier.other_label,
+                media_type=result.media_type or "unknown",
+                success=True,
+                industry_name=result.industry_name or record.task_industry_name,
+            )
+            self.repo.update_level_result(None, record, fallback)
+            result.timings.writeback_ms += (time.perf_counter() - t_writeback_start) * 1000
+            result.layer = self.classifier.other_label
+            result.fallback_level_written = True
+            # 此条的最终业务状态已闭环；错误字段保留原始失败原因。
+            result.success = True
+            self.logger.warning(
+                "处理失败已按兜底规则回写 level=6 mid=%s stage=%s",
+                result.mid,
+                result.error_stage or "unknown",
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "处理失败回写 level=6 失败 mid=%s stage=%s error=%s",
+                result.mid,
+                result.error_stage or "unknown",
+                exc,
+            )
 
     def process_batch(
         self,
@@ -377,6 +431,32 @@ class ClassifyPipeline:
         if cleaned:
             self.logger.debug(f"清理临时文件: {cleaned}")
 
+    def _cleanup_expired_cache(self):
+        """启动时清理过期缓存，异常中断遗留的媒体文件不会无限堆积。"""
+        retention_hours = float(self.config.get("media", {}).get("cache_retention_hours", 24))
+        if retention_hours <= 0 or not os.path.isdir(DEFAULT_CACHE_DIR):
+            return
+        cutoff = time.time() - retention_hours * 3600
+        removed = 0
+        for root, dirs, files in os.walk(DEFAULT_CACHE_DIR, topdown=False):
+            for filename in files:
+                path = os.path.join(root, filename)
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                        removed += 1
+                except OSError:
+                    pass
+            for dirname in dirs:
+                path = os.path.join(root, dirname)
+                try:
+                    if not os.listdir(path):
+                        os.rmdir(path)
+                except OSError:
+                    pass
+        if removed:
+            self.logger.info("启动清理过期媒体缓存: %s 个文件", removed)
+
     def _write_error_log(self, result: ProcessResult):
         os.makedirs(self.error_log_dir, exist_ok=True)
         date_str = datetime.now().strftime("%Y%m%d")
@@ -446,7 +526,10 @@ class ClassifyPipeline:
 
     def _log_result(self, result: ProcessResult):
         t = result.timings
-        status = "✅ 成功" if result.success else "❌ 失败"
+        if result.fallback_level_written:
+            status = "⚠️ 失败已兜底为 level=6"
+        else:
+            status = "✅ 成功" if result.success else "❌ 失败"
 
         lines = [
             "=" * 60,
@@ -467,13 +550,13 @@ class ClassifyPipeline:
             f"  视频封面: {result.video_cover_url}",
             f"  耗时: 反解={t.resolve_ms:.0f}ms 分类={t.classify_ms:.0f}ms 清理={t.cleanup_ms:.0f}ms 回写={t.writeback_ms:.0f}ms 总计={t.total_ms:.0f}ms",
         ]
-        if not result.success:
+        if result.error_stage:
             lines.append(f"  失败阶段: {result.error_stage}")
             lines.append(f"  错误信息: {result.error[:300]}")
         lines.append("=" * 60)
 
         for line in lines:
-            if result.success:
+            if result.success and not result.fallback_level_written:
                 self.logger.info(line)
             else:
                 self.logger.warning(line)

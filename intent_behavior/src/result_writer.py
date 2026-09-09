@@ -66,6 +66,8 @@ class LevelUpdateClient:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                if not isinstance(data, dict):
+                    raise RuntimeError(f"回写接口响应不是 JSON 对象: {data!r}")
                 self.logger.info(f"[LevelUpdate] 回写成功 mid={mid} resp={data}")
                 return data
 

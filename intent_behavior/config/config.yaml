@@ -116,6 +116,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文内容：
         {content}
@@ -126,6 +127,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文文字内容：
         {content}
@@ -138,6 +140,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文文字内容：
         {content}
@@ -172,6 +175,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文内容：
         {content}
@@ -182,6 +186,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文文字内容：
         {content}
@@ -194,6 +199,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        发博账号：{author_name}
 
         博文文字内容：
         {content}
@@ -206,6 +212,7 @@ prompts:
 
     行业：{industry}
     品牌词：{brand_terms}
+    转发账号：{author_name}
 
     转发博文内容：
     {content}
@@ -214,17 +221,23 @@ prompts:
     {forward_content}
 
     需要重点判断是否存在：
-    1. 非理智表达
-    2. 拉踩
-    3. 抹黑
-    4. 与原博文信息明显不一致
+    1. 明确的非理智攻击、侮辱或煽动性表达
+    2. 缺乏事实依据的拉踩、贬损竞品或第三方
+    3. 缺乏事实依据的抹黑、造谣或恶意负面指控
+    4. 对原博文核心事实作出明显相反或歪曲的表述
 
-    输出要求：
+    以下情况不是异常：客观介绍、正向评价、品牌/高管/员工对产品的宣传或转述、
+    基于原博信息的体验分享，即使措辞带有赞美、期待或推广目的，也应判为正常。
+    不要仅因转发者是品牌相关人员、存在营销文案、或没有逐字复述原博文而判异常。
+    只有能从两段文本中看到上述明确风险时，才判异常。
+
+    输出要求（不要输出解释）：
     - 如果存在上述异常情况，输出：转发判定：【异常】
     - 如果不存在上述异常情况，输出：转发判定：【正常】
 
 # 图片媒体配置
 media:
+  cache_retention_hours: 24
   image:
     url_pattern: "https://wx2.sinaimg.cn/mw690/{pid}.jpg"
     download_timeout: 30
@@ -235,6 +248,8 @@ media:
     default_customer_id: "2608812381"
     extract_frames_count: 3
     download_timeout: 120
+    max_duration_sec: 300
+    max_video_size_mb: 200
     enabled: true
     # 视频处理策略：始终优先 frame（抽帧），frame 失败自动降级 cover（封面图）
     # 此配置仅作为文档参考，实际策略由 classifier.py 控制（优先 frame）
@@ -285,7 +300,8 @@ mysql:
   active_task_type: 1
   inactive_exec_status: 5
   task_id_field: "task_id"
-  task_customer_id_field: "customer_id"
+  # 原生内容站任务中 operator_uid 即 customer_id，用于分表路由。
+  task_customer_id_field: "operator_uid"
   task_industry_tag_field: "industry_tag"
   task_brand_tag_field: "brand_tag"
   task_end_time_field: "end_time"
@@ -293,7 +309,6 @@ mysql:
   shard_forward_mid_field: "forward_mid"
   shard_forward_text_field: "forward_mid_text"
   shard_hit_mid_tag_field: "hit_mid_tag"
-  test_customer_id: 2608812381
 
 # MySQL worker 轮询配置
 worker:
@@ -301,14 +316,34 @@ worker:
   active_task_limit: 50
   fetch_limit_per_task: 100
   max_loops: 0
+  # MySQL 命名锁：多个 worker 时防止同一记录被重复送模型。
+  record_lock_timeout_sec: 0
 
 # 日志配置
 logging:
   level: "INFO"
   dir: "logs"
   file_pattern: "classify_{date}.log"
+  retention_days: 30
+  # 旧 TSV 仅为本地调试兼容。正式溯源以 audit JSONL / MySQL 审计表为准。
+  write_legacy_tsv: false
   error_file: "logs/error_records.tsv"
   result_file: "output/result.tsv"
+
+# 每次正式执行创建独立、可追溯的 JSONL 审计文件。
+audit:
+  enabled: true
+  dir: "logs/runs"
+  retention_days: 30
+  record_model_output: true
+  max_model_output_chars: 2000
+  # 已创建审计表；保留结构化审计，便于按 task/mid 查询历史。
+  mysql_enabled: true
+  mysql_table: "nature_ad_mid_ai_audit"
+  mysql_flush_batch_size: 20
+  # 由 scripts/cleanup_mysql_audit.py --execute 每日低峰分批清理。
+  mysql_retention_days: 90
+  mysql_cleanup_batch_size: 10000
 
 # 批处理配置
 batch:

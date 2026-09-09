@@ -34,11 +34,13 @@ def main():
         name="mysql_worker",
         log_dir=config.get("logging", {}).get("dir", "logs"),
         level=config.get("logging", {}).get("level", "INFO"),
+        retention_days=int(config.get("logging", {}).get("retention_days", 30)),
     )
 
     worker = create_worker(config, logger)
     if args.once:
         summary = worker.run_once()
+        worker.pipeline.audit.finalize({"worker_summary": summary, "mode": "once"})
         print(summary)
     else:
         worker.run_forever()

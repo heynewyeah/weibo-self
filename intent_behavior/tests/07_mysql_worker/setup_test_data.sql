@@ -2,7 +2,7 @@
 -- 说明：
 -- 1. 当前开发环境通常只有 nature_ad_super_mid_1 可用
 -- 2. 以下脚本用于构造最小联调数据
--- 3. 这里假设使用 mysql.test_customer_id = 2608812381，且 2608812381 % 20 = 1
+-- 3. 这里使用 super_mid_task.operator_uid = 2608812381，且 2608812381 % 20 = 1
 
 -- 1) 插入 super_mid_task 测试任务
 INSERT INTO super_mid_task (

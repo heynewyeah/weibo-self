@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -69,6 +70,7 @@ class MidRecord:
     super_task_id: int
     mid: str
     mid_uid: str
+    mid_uid_name: str
     mid_text: str
     mid_pids: str
     mid_fids: str
@@ -100,6 +102,7 @@ class MidRecord:
                 "row_id": self.id,
                 "customer_id": self.customer_id,
                 "super_task_id": self.super_task_id,
+                "author_name": self.mid_uid_name,
                 "source": "mysql_shard",
                 "has_forward": self.has_forward(),
             },
@@ -170,6 +173,44 @@ class MySQLTaskRepository:
         finally:
             conn.close()
 
+    @contextmanager
+    def acquire_record_lock(self, record: MidRecord, timeout_sec: int = 0):
+        """
+        通过 MySQL 命名锁短路重复消费。
+
+        不能在网络反解/媒体下载/模型推理期间一直占用行锁；命名锁不持有业务事务，
+        连接断开会自动释放，且能让多个 worker 对同一条 level=0 记录互斥执行。
+        """
+        source = f"intent_behavior:{record.customer_id}:{record.super_task_id}:{record.id}:{record.mid}"
+        lock_name = "ib:" + hashlib.sha1(source.encode("utf-8")).hexdigest()
+        conn = None
+        acquired = False
+        try:
+            pymysql = self._get_driver()
+            conn = pymysql.connect(
+                host=self.config["host"],
+                port=int(self.config.get("port", 3306)),
+                user=self.config["user"],
+                password=self.config["password"],
+                database=self.config["database"],
+                charset=self.config.get("charset", "utf8mb4"),
+                autocommit=True,
+                cursorclass=pymysql.cursors.DictCursor,
+            )
+            with conn.cursor() as cur:
+                cur.execute("SELECT GET_LOCK(%s, %s) AS acquired", (lock_name, max(0, int(timeout_sec))))
+                acquired = int((cur.fetchone() or {}).get("acquired") or 0) == 1
+            yield acquired
+        finally:
+            if conn is not None:
+                if acquired:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    except Exception:
+                        self.logger.warning("释放记录锁失败 record_id=%s", record.id)
+                conn.close()
+
     def table_exists(self, conn, table_name: str) -> bool:
         sql = """
         SELECT 1
@@ -238,12 +279,11 @@ class MySQLTaskRepository:
         task_id_field = self.config.get("task_id_field", "task_id")
         industry_tag_field = self.config.get("task_industry_tag_field", "industry_tag")
         brand_tag_field = self.config.get("task_brand_tag_field", "brand_tag")
-        fallback_customer_id = int(self.config.get("test_customer_id", 0) or 0)
-
-        customer_id = int(row.get(customer_field, 0) or fallback_customer_id or 0)
+        customer_id = int(row.get(customer_field, 0) or 0)
         if customer_id <= 0:
             self.logger.warning(
-                "任务缺少有效 customer_id，跳过: id=%s，可通过 mysql.test_customer_id 做测试注入",
+                "任务缺少有效 customer_id（配置字段=%s），跳过: id=%s",
+                customer_field,
                 row.get("id"),
             )
             return None
@@ -278,14 +318,14 @@ class MySQLTaskRepository:
         task: TaskRecord,
         limit: int = 100,
         only_level_zero: bool = True,
-        for_update: bool = True,
+        for_update: bool = False,
     ) -> List[MidRecord]:
         """
         拉取待处理记录。
 
         Args:
-            for_update: 是否加行级锁（SELECT ... FOR UPDATE SKIP LOCKED）。
-                        开启后多个 worker 实例不会重复处理同一条记录。
+            for_update: 兼容调试场景的行锁参数。正式 worker 使用 MySQL 命名锁，
+                        不应在外部网络调用期间持有 SELECT ... FOR UPDATE 行锁。
         """
         table = task.shard_table
         if not self.table_exists(conn, table):
@@ -345,6 +385,31 @@ class MySQLTaskRepository:
 
         return [self._row_to_mid_record(row, task=task) for row in rows]
 
+    def is_pending(self, record: MidRecord) -> bool:
+        """
+        在拿到命名锁后重新确认记录仍为 level=0。
+
+        该检查使用独立的短事务，避免“先读到 level=0、等待锁期间已被别的实例回写”
+        时重复调用外部模型。
+        """
+        table = f"{self.config.get('shard_table_prefix', 'nature_ad_super_mid_')}{record.customer_id % 20}"
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT level
+                    FROM {table}
+                    WHERE id = %s
+                      AND customer_id = %s
+                      AND super_task_id = %s
+                      AND mid = %s
+                    LIMIT 1
+                    """,
+                    (record.id, record.customer_id, record.super_task_id, record.mid),
+                )
+                row = cur.fetchone()
+        return row is not None and int(row.get("level") or 0) == self.pending_level
+
     def update_level_result(self, conn, record: MidRecord, result: ClassifyResult) -> Any:
         if self.writer is None:
             raise RuntimeError(
@@ -352,13 +417,62 @@ class MySQLTaskRepository:
             )
 
         level = self.get_level_code(record.task_industry_name or result.industry_name, result.layer)
-        return self.writer.update_level(
-            customer_id=record.customer_id,
-            task_id=record.super_task_id,
-            mid=record.mid,
-            level=level,
-            update_time=datetime.now().isoformat(),
+        try:
+            response = self.writer.update_level(
+                customer_id=record.customer_id,
+                task_id=record.super_task_id,
+                mid=record.mid,
+                level=level,
+                update_time=datetime.now().isoformat(),
+            )
+        except Exception as exc:
+            # 网络超时仅表示客户端未收到响应；服务端可能已经将 level=0 更新为目标值。
+            if self.confirm_level(record, level):
+                self.logger.warning(
+                    "回写响应异常但已确认落库，按成功处理 mid=%s task_id=%s level=%s error=%s",
+                    record.mid, record.super_task_id, level, exc,
+                )
+                return {"state": "confirmed_after_transport_error", "level": level}
+            raise
+
+        if response.get("code") != 0:
+            raise RuntimeError(
+                f"回写接口业务失败: code={response.get('code')}, message={response.get('message', '')}"
+            )
+
+        # 服务端仅更新 level=0：data=1 表示本次生效；data=0 必须查询确认，不能静默当成功。
+        if int(response.get("data") or 0) == 1:
+            return {"state": "applied", "level": level, "response": response}
+        if self.confirm_level(record, level):
+            self.logger.info(
+                "回写返回 data=0，但数据库已是目标 level，按幂等成功处理 mid=%s task_id=%s level=%s",
+                record.mid, record.super_task_id, level,
+            )
+            return {"state": "already_applied", "level": level, "response": response}
+        raise RuntimeError(
+            "回写接口未更新且数据库未达到目标状态: "
+            f"mid={record.mid} task_id={record.super_task_id} target_level={level} response={response}"
         )
+
+    def confirm_level(self, record: MidRecord, expected_level: int) -> bool:
+        """只读确认回写最终状态，专门解决“服务端落库但客户端超时”的不确定性。"""
+        table = f"{self.config.get('shard_table_prefix', 'nature_ad_super_mid_')}{record.customer_id % 20}"
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT level
+                    FROM {table}
+                    WHERE id = %s
+                      AND customer_id = %s
+                      AND super_task_id = %s
+                      AND mid = %s
+                    LIMIT 1
+                    """,
+                    (record.id, record.customer_id, record.super_task_id, record.mid),
+                )
+                row = cur.fetchone()
+        return row is not None and int(row.get("level") or 0) == int(expected_level)
 
     def update_record_failure(self, conn, record: MidRecord, error_msg: str) -> None:
         self.logger.warning(
@@ -415,6 +529,7 @@ class MySQLTaskRepository:
             super_task_id=int(row.get("super_task_id", 0)),
             mid=str(row.get("mid", "") or ""),
             mid_uid=str(row.get("mid_uid", "") or ""),
+            mid_uid_name=str(row.get("mid_uid_name", "") or ""),
             mid_text=str(row.get("mid_text", "") or ""),
             mid_pids=str(row.get("mid_pids", "") or ""),
             mid_fids=str(row.get("mid_fids", "") or ""),

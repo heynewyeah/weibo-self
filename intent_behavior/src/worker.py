@@ -33,7 +33,9 @@ class WorkerStats:
     task_count: int = 0
     pending_count: int = 0
     success_count: int = 0
+    fallback_count: int = 0
     fail_count: int = 0
+    skip_count: int = 0
 
 
 class MySQLShardWorker:
@@ -58,7 +60,9 @@ class MySQLShardWorker:
             "tasks": 0,
             "pending": 0,
             "success": 0,
+            "fallback": 0,
             "fail": 0,
+            "skipped": 0,
         }
 
         self.logger.info("")
@@ -66,29 +70,36 @@ class MySQLShardWorker:
         self.logger.info(f"# 第 {self.stats.loops} 轮轮询开始")
         self.logger.info("#" * 80)
 
+        # 任务读取只占用短事务。后续网络 I/O（反解/下载/模型/回写）不持有数据库行锁。
         with self.repo.connect() as conn:
             tasks = self.repo.fetch_active_tasks(conn, limit=active_task_limit)
-            self.stats.task_count += len(tasks)
-            loop_summary["tasks"] = len(tasks)
 
-            if not tasks:
-                self.logger.info("未发现有效任务，结束本轮轮询")
-                return loop_summary
+        self.stats.task_count += len(tasks)
+        loop_summary["tasks"] = len(tasks)
 
-            self.logger.info(f"发现 {len(tasks)} 个有效任务")
+        if not tasks:
+            self.logger.info("未发现有效任务，结束本轮轮询")
+            return loop_summary
 
-            for task_idx, task in enumerate(tasks, 1):
-                task_summary = self._process_task(conn, task, batch_limit, task_idx, len(tasks))
-                loop_summary["pending"] += task_summary["pending"]
-                loop_summary["success"] += task_summary["success"]
-                loop_summary["fail"] += task_summary["fail"]
+        self.logger.info(f"发现 {len(tasks)} 个有效任务")
+
+        for task_idx, task in enumerate(tasks, 1):
+            task_summary = self._process_task(task, batch_limit, task_idx, len(tasks))
+            loop_summary["pending"] += task_summary["pending"]
+            loop_summary["success"] += task_summary["success"]
+            loop_summary["fallback"] += task_summary["fallback"]
+            loop_summary["fail"] += task_summary["fail"]
+            loop_summary["skipped"] += task_summary["skipped"]
+            self.pipeline.audit.record_task_summary(task, task_summary)
 
         self.logger.info("")
         self.logger.info(f"第 {self.stats.loops} 轮轮询完成: "
                          f"任务数={loop_summary['tasks']} "
                          f"记录数={loop_summary['pending']} "
                          f"成功={loop_summary['success']} "
-                         f"失败={loop_summary['fail']}")
+                         f"兜底={loop_summary['fallback']} "
+                         f"失败={loop_summary['fail']} "
+                         f"跳过={loop_summary['skipped']}")
 
         return loop_summary
 
@@ -105,23 +116,27 @@ class MySQLShardWorker:
         )
 
         loop_idx = 0
-        while True:
-            loop_idx += 1
-            try:
-                summary = self.run_once()
-            except KeyboardInterrupt:
-                self.logger.info("收到中断信号，worker 退出")
-                break
-            except Exception as exc:
-                self.logger.exception("worker 轮询异常: %s", exc)
+        try:
+            while True:
+                loop_idx += 1
+                try:
+                    self.run_once()
+                except KeyboardInterrupt:
+                    self.logger.info("收到中断信号，worker 退出")
+                    break
+                except Exception as exc:
+                    self.logger.exception("worker 轮询异常: %s", exc)
 
-            if max_loops > 0 and loop_idx >= max_loops:
-                self.logger.info("达到最大轮询次数 max_loops=%s，退出", max_loops)
-                break
+                if max_loops > 0 and loop_idx >= max_loops:
+                    self.logger.info("达到最大轮询次数 max_loops=%s，退出", max_loops)
+                    break
 
-            time.sleep(poll_interval)
+                time.sleep(poll_interval)
+        finally:
+            # 即使其他入口直接调用 run_forever，也要落运行汇总。
+            self.pipeline.audit.finalize({"mode": "forever", "loops": loop_idx})
 
-    def _process_task(self, conn, task: TaskRecord, batch_limit: int,
+    def _process_task(self, task: TaskRecord, batch_limit: int,
                       task_idx: int, total_tasks: int) -> Dict[str, int]:
         self.logger.info("")
         self.logger.info("-" * 80)
@@ -132,12 +147,18 @@ class MySQLShardWorker:
                          f"shard={task.shard_table}")
         self.logger.info("-" * 80)
 
-        pending_records = self.repo.fetch_pending_mids(conn, task, limit=batch_limit)
+        # 仅作短时间只读拉取；真正处理前会用命名锁互斥并再次检查 level=0。
+        with self.repo.connect() as conn:
+            pending_records = self.repo.fetch_pending_mids(
+                conn, task, limit=batch_limit, only_level_zero=True, for_update=False
+            )
 
         task_summary = {
             "pending": len(pending_records),
             "success": 0,
+            "fallback": 0,
             "fail": 0,
+            "skipped": 0,
         }
         self.stats.pending_count += len(pending_records)
 
@@ -153,11 +174,19 @@ class MySQLShardWorker:
                              f"mid={record.mid} uid={record.mid_uid} "
                              f"forward_mid={record.forward_mid or '无'}")
 
-            ok = self._process_record(conn, task, record)
-            if ok:
+            outcome = self._process_record(task, record)
+            if outcome == "success":
                 task_summary["success"] += 1
                 self.stats.success_count += 1
                 self.logger.info(f"  └─ ✅ 处理成功")
+            elif outcome == "fallback":
+                task_summary["fallback"] += 1
+                self.stats.fallback_count += 1
+                self.logger.warning("  └─ ⚠️ 处理失败，已按规则回写 level=6")
+            elif outcome == "skipped":
+                task_summary["skipped"] += 1
+                self.stats.skip_count += 1
+                self.logger.info(f"  └─ ⏭ 已被其他实例处理或不再待处理，跳过")
             else:
                 task_summary["fail"] += 1
                 self.stats.fail_count += 1
@@ -166,22 +195,32 @@ class MySQLShardWorker:
         self.logger.info("")
         self.logger.info(f"  任务完成: task_id={task.task_id} "
                          f"成功={task_summary['success']} "
-                         f"失败={task_summary['fail']}")
+                         f"兜底={task_summary['fallback']} "
+                         f"失败={task_summary['fail']} "
+                         f"跳过={task_summary['skipped']}")
 
         return task_summary
 
-    def _process_record(self, conn, task: TaskRecord, record: MidRecord) -> bool:
+    def _process_record(self, task: TaskRecord, record: MidRecord) -> str:
         try:
-            # 通过 ClassifyPipeline 执行完整链路：
-            # mid 反解 → 分类 → 临时文件清理 → HTTP 回写
-            process_result = self.pipeline.process_one(
-                mid=record.mid,
-                uid=record.mid_uid,
-                mode="auto",
-                write_back=True,
-                record=record,
-            )
-            return process_result.success
+            lock_timeout = int(self.worker_cfg.get("record_lock_timeout_sec", 0))
+            with self.repo.acquire_record_lock(record, timeout_sec=lock_timeout) as acquired:
+                if not acquired:
+                    return "skipped"
+                if not self.repo.is_pending(record):
+                    return "skipped"
+
+                # 命名锁覆盖整条外部处理链路，但不持有数据库事务/行锁。
+                process_result = self.pipeline.process_one(
+                    mid=record.mid,
+                    uid=record.mid_uid,
+                    mode="auto",
+                    write_back=True,
+                    record=record,
+                )
+                if process_result.fallback_level_written:
+                    return "fallback"
+                return "success" if process_result.success else "fail"
         except Exception as exc:
             self.logger.exception(
                 "记录处理异常 task_id=%s mid=%s error=%s",
@@ -190,7 +229,7 @@ class MySQLShardWorker:
                 exc,
             )
             try:
-                self.repo.update_record_failure(conn, record, str(exc))
+                self.repo.update_record_failure(None, record, str(exc))
             except Exception as write_exc:
                 self.logger.exception(
                     "失败回写再次失败 task_id=%s mid=%s error=%s",
@@ -198,7 +237,7 @@ class MySQLShardWorker:
                     record.mid,
                     write_exc,
                 )
-            return False
+            return "fail"
 
 
 def create_worker(config: Dict[str, Any], logger: Optional[logging.Logger] = None) -> MySQLShardWorker:

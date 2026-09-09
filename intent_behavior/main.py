@@ -3,10 +3,10 @@
 意图行为项目 - 博文分类服务主入口（兼容层）
 
 注意：
-- 新的完整分类入口已迁移到 run_classification.py
-- 本文件保留兼容性，实际逻辑已委托给 run_classification.main()
+- 本文件是本地预演入口的兼容别名，实际逻辑委托给 run_classification.py。
+- MySQL 正式持续回写唯一入口是 worker.py，不要通过本文件回写。
 
-推荐使用新入口：
+推荐直接使用预演入口：
   python3 run_classification.py --mid <mid> --uid <uid> --mode auto
 """
 

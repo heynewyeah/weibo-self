@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-端到端流水线 v1（最终版） - 持续处理 MySQL 中的待分类任务
+端到端流水线 v1（已弃用） - 持续处理 MySQL 中的待分类任务
 ========================================================
-功能：
+状态：已弃用。正式持续运行请使用 `python3 worker.py --config config/config.yaml`。
+
+保留本文件仅兼容历史命令；它的轮询退出语义与正式 worker 不同，不再建议部署。
+
+历史功能：
   1. 持续轮询 MySQL 中的 super_mid_task 表，查找待处理任务
   2. 对每个任务，处理其关联的所有 level=0 的记录
   3. 处理完成后自动回写结果到 HTTP 接口
@@ -26,9 +30,8 @@
 
 输出：
   - 终端实时输出处理进度
-  - logs/classify.log（轮转日志）
-  - logs/反解失败汇总.txt（反解失败记录）
-  - output/result.tsv（分类结果）
+  - logs/e2e_pipeline.log（轮转日志）
+  - logs/runs/YYYYMMDD/<run_id>.jsonl（结构化审计）
 
 作者：xuanyu11
 创建时间：2026-09-01
@@ -68,10 +71,19 @@ def main():
     args = parser.parse_args()
 
     # ── 初始化 ────────────────────────────────────────────────
-    logger = setup_logger("e2e_pipeline", log_dir=os.path.join(PROJECT_DIR, "logs"))
+    # ── 创建 worker ───────────────────────────────────────────
+    import yaml
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    logger = setup_logger(
+        "e2e_pipeline",
+        log_dir=os.path.join(PROJECT_DIR, config.get("logging", {}).get("dir", "logs")),
+        level=config.get("logging", {}).get("level", "INFO"),
+        retention_days=int(config.get("logging", {}).get("retention_days", 30)),
+    )
     
     logger.info("=" * 70)
-    logger.info("端到端流水线启动")
+    logger.info("端到端流水线启动（已弃用，请迁移到 worker.py）")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"配置文件: {args.config}")
     logger.info(f"最大轮数: {args.max_rounds if args.max_rounds > 0 else '无限'}")
@@ -79,11 +91,6 @@ def main():
     logger.info(f"轮询间隔: {args.poll_interval}s")
     logger.info(f"每任务每轮最大记录数: {args.batch_limit}")
     logger.info("=" * 70)
-
-    # ── 创建 worker ───────────────────────────────────────────
-    import yaml
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
 
     # 覆盖配置
     config["worker"]["active_task_limit"] = args.max_tasks_per_round
@@ -98,6 +105,7 @@ def main():
     total_tasks = 0
     total_records = 0
     total_success = 0
+    total_fallback = 0
     total_fail = 0
     round_count = 0
     empty_rounds = 0
@@ -115,17 +123,20 @@ def main():
             tasks_processed = summary["tasks"]
             records_processed = summary["pending"]
             success_count = summary["success"]
+            fallback_count = summary.get("fallback", 0)
             fail_count = summary["fail"]
 
             total_tasks += tasks_processed
             total_records += records_processed
             total_success += success_count
+            total_fallback += fallback_count
             total_fail += fail_count
 
             logger.info(f"\n第 {round_count} 轮处理完成:")
             logger.info(f"  处理任务数: {tasks_processed}")
             logger.info(f"  处理记录数: {records_processed}")
             logger.info(f"  成功: {success_count}")
+            logger.info(f"  失败兜底(6): {fallback_count}")
             logger.info(f"  失败: {fail_count}")
 
             # 检查是否应该退出
@@ -153,7 +164,7 @@ def main():
 
     # ── 汇总报告 ──────────────────────────────────────────────
     total_elapsed = (datetime.now() - total_start).total_seconds()
-    success_rate = (total_success / total_records * 100) if total_records > 0 else 0
+    success_rate = ((total_success + total_fallback) / total_records * 100) if total_records > 0 else 0
 
     logger.info(f"\n{'='*70}")
     logger.info("端到端流水线汇总报告")
@@ -164,15 +175,22 @@ def main():
     logger.info(f"处理任务总数: {total_tasks}")
     logger.info(f"处理记录总数: {total_records}")
     logger.info(f"成功:         {total_success}")
+    logger.info(f"失败兜底(6):  {total_fallback}")
     logger.info(f"失败:         {total_fail}")
     logger.info(f"成功率:       {success_rate:.1f}%")
     logger.info(f"{'='*70}")
 
-    logger.info(f"\n输出文件:")
-    logger.info(f"  日志:       logs/classify.log")
-    logger.info(f"  反解失败:   logs/反解失败汇总.txt")
-    logger.info(f"  分类结果:   output/result.tsv")
-    logger.info(f"  错误记录:   logs/error_records.tsv")
+    logger.info("\n输出文件:")
+    logger.info("  主日志:     logs/e2e_pipeline.log")
+    logger.info(f"  运行审计:   {worker.pipeline.audit.path}")
+    logger.info(f"  运行汇总:   {worker.pipeline.audit.summary_path}")
+    worker.pipeline.audit.finalize({
+        "mode": "deprecated_e2e_pipeline",
+        "rounds": round_count,
+        "success": total_success,
+        "fallback": total_fallback,
+        "fail": total_fail,
+    })
 
     # 退出码：成功率低于 80% 返回 1
     sys.exit(0 if success_rate >= 80 else 1)

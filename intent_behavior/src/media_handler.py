@@ -175,6 +175,8 @@ class VideoHandler:
         self.default_customer_id = config.get("default_customer_id", "")
         self.extract_frames_count = config.get("extract_frames_count", 3)
         self.download_timeout = config.get("download_timeout", 120)
+        self.max_duration_sec = float(config.get("max_duration_sec", 300))
+        self.max_video_size_bytes = int(float(config.get("max_video_size_mb", 200)) * 1024 * 1024)
         self.enabled = config.get("enabled", False)
         # 视频处理模式：cover（封面图）或 frame（抽帧）
         self.video_mode = config.get("video_mode", "cover")
@@ -292,8 +294,18 @@ class VideoHandler:
         try:
             resp = requests.get(url, timeout=self.download_timeout, stream=True)
             resp.raise_for_status()
+            written = 0
             with open(save_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if self.max_video_size_bytes > 0 and written > self.max_video_size_bytes:
+                        self.logger.warning(
+                            "视频超过大小上限(%sMB)，放弃抽帧并降级封面: %s",
+                            self.max_video_size_bytes // 1024 // 1024, url,
+                        )
+                        return False
                     f.write(chunk)
             file_size = os.path.getsize(save_path)
             if file_size < 1024:
@@ -306,6 +318,20 @@ class VideoHandler:
         except Exception as e:
             self.logger.warning(f"视频下载失败: {url} - {e}")
         return False
+
+    def get_video_duration(self, video_path: str) -> float:
+        """读取本地视频时长；无法读取时返回 0（后续仍尝试抽帧）。"""
+        try:
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return 0.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = float(cap.get(cv2.CAP_PROP_FPS))
+            cap.release()
+            return total_frames / fps if fps > 0 else 0.0
+        except Exception:
+            return 0.0
 
     def extract_frames(self, video_path: str, num_frames: int = None,
                        output_dir: str = None) -> List[str]:
@@ -442,6 +468,22 @@ class VideoHandler:
         video_path = os.path.join(tmp_dir, f"video_{safe_id}.mp4")
 
         if not self.download_video(video_url, video_path):
+            try:
+                os.remove(video_path)
+            except OSError:
+                pass
+            return []
+
+        duration = self.get_video_duration(video_path)
+        if self.max_duration_sec > 0 and duration > self.max_duration_sec:
+            self.logger.info(
+                "视频时长 %.1fs 超过 %.1fs，跳过抽帧并降级封面: fid=%s",
+                duration, self.max_duration_sec, media_id,
+            )
+            try:
+                os.remove(video_path)
+            except OSError:
+                pass
             return []
 
         frames_dir = os.path.join(tmp_dir, f"frames_{safe_id}")

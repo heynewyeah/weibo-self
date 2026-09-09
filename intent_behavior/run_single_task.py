@@ -11,11 +11,11 @@
   5. 处理完即退出（不轮询、不触碰其他任务）
 
 运行方式：
-  # 处理指定 task_id 下的 10 条待分类 mid（默认回写结果）
+  # 仅预演指定任务下的 10 条待分类 mid（默认不回写）
   python3 run_single_task.py --task-id 1301222511089811457 --limit 10
 
-  # 只分类不回写（用于试跑验证）
-  python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --no-write-back
+  # 明确开启回写（仅用于受控联调；正式持续处理请使用 worker.py）
+  python3 run_single_task.py --task-id 1301222511089811457 --limit 10 --write-back
 
   # 自定义模式 / 配置文件
   python3 run_single_task.py --task-id 1301222511089811457 --limit 20 --mode auto
@@ -23,9 +23,8 @@
 
 输出：
   - 终端实时输出每条 mid 的处理进度与耗时
-  - logs/classify.log（轮转日志）
-  - logs/反解失败汇总.txt（反解失败记录）
-  - output/result.tsv（分类结果）
+  - logs/runs/YYYYMMDD/<run_id>.jsonl（每条处理的结构化审计）
+  - logs/runs/YYYYMMDD/<run_id>_summary.json（本次运行汇总）
 
 作者：xuanyu11
 版本：v1（2026-09-04）
@@ -65,8 +64,8 @@ def main():
                         help="最多处理该任务下多少条 level=0 的 mid（默认10）")
     parser.add_argument("--mode", default="auto", choices=["auto", "text", "image", "video"],
                         help="处理模式：auto 自动判断 / text / image / video（默认 auto）")
-    parser.add_argument("--no-write-back", action="store_true",
-                        help="不回写结果到 HTTP 接口（默认会回写）")
+    parser.add_argument("--write-back", action="store_true",
+                        help="回写结果到 HTTP 接口（默认关闭；正式运行请使用 worker.py）")
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"),
                         help="配置文件路径")
     args = parser.parse_args()
@@ -79,7 +78,13 @@ def main():
         sys.exit(2)
 
     # ── 初始化 ────────────────────────────────────────────────
-    logger = setup_logger("single_task_pipeline", log_dir=os.path.join(PROJECT_DIR, "logs"))
+    config = load_config(args.config)
+    logger = setup_logger(
+        "single_task_pipeline",
+        log_dir=os.path.join(PROJECT_DIR, config.get("logging", {}).get("dir", "logs")),
+        level=config.get("logging", {}).get("level", "INFO"),
+        retention_days=int(config.get("logging", {}).get("retention_days", 30)),
+    )
 
     logger.info("=" * 70)
     logger.info("单任务流水线启动")
@@ -87,100 +92,130 @@ def main():
     logger.info(f"task_id:    {args.task_id}")
     logger.info(f"mid 上限:   {args.limit}")
     logger.info(f"处理模式:   {args.mode}")
-    logger.info(f"结果回写:   {'关闭' if args.no_write_back else '开启'}")
+    logger.info(f"结果回写:   {'开启' if args.write_back else '关闭'}")
     logger.info(f"配置文件:   {args.config}")
     logger.info("=" * 70)
 
-    config = load_config(args.config)
     repo = MySQLTaskRepository(config.get("mysql", {}), logger, app_config=config)
     pipeline = ClassifyPipeline(config, logger)
 
     # ── 查询任务并拉取待处理 mid ──────────────────────────────
+    # 只在该短事务内读任务和待处理记录；外部反解/模型/回写绝不能占用此连接。
     with repo.connect() as conn:
         task = repo.fetch_task_by_id(conn, args.task_id)
-        if task is None:
-            logger.error(
-                f"未找到可处理的 task_id={args.task_id}"
-                "（任务不存在，或缺少有效 customer_id 无法路由）"
+        records = (
+            repo.fetch_pending_mids(
+                conn, task, limit=args.limit, only_level_zero=True, for_update=False
             )
-            sys.exit(2)
+            if task is not None else []
+        )
 
-        logger.info("-" * 70)
-        logger.info(f"任务信息: id={task.id} task_id={task.task_id} "
-                    f"customer_id={task.customer_id} shard={task.shard_table}")
-        logger.info(f"          task_type={task.task_type} exec_status={task.exec_status} "
-                    f"industry={task.industry_name or '无'}")
-        logger.info("-" * 70)
+    if task is None:
+        logger.error(
+            f"未找到可处理的 task_id={args.task_id}"
+            "（任务不存在，或缺少有效 customer_id 无法路由）"
+        )
+        pipeline.audit.finalize({"mode": "single_task", "task_id": args.task_id, "reason": "task_not_found"})
+        sys.exit(2)
 
-        records = repo.fetch_pending_mids(conn, task, limit=args.limit, only_level_zero=True)
-        logger.info(f"task_id={task.task_id} 下待处理（level=0）记录数: {len(records)}")
+    logger.info("-" * 70)
+    logger.info(f"任务信息: id={task.id} task_id={task.task_id} "
+                f"customer_id={task.customer_id} shard={task.shard_table}")
+    logger.info(f"          task_type={task.task_type} exec_status={task.exec_status} "
+                f"industry={task.industry_name or '无'}")
+    logger.info("-" * 70)
+    logger.info(f"task_id={task.task_id} 下待处理（level=0）记录数: {len(records)}")
 
-        total_start = datetime.now()
-        total_success = 0
-        total_fail = 0
+    if not records:
+        logger.info("该任务下没有待处理记录，直接结束")
+        logger.info("=" * 70)
+        pipeline.audit.finalize({"mode": "single_task", "task_id": task.task_id, "processed": 0})
+        sys.exit(0)
 
-        if not records:
-            logger.info("该任务下没有待处理记录，直接结束")
-            logger.info("=" * 70)
-            sys.exit(0)
+    total_start = datetime.now()
+    total_success = 0
+    total_fallback = 0
+    total_fail = 0
+    total_skipped = 0
 
-        # ── 逐条处理 ──────────────────────────────────────────
-        for record_idx, record in enumerate(records, 1):
-            logger.info("")
-            logger.info(f"[{record_idx}/{len(records)}] 开始处理 "
-                        f"mid={record.mid} uid={record.mid_uid} "
-                        f"forward_mid={record.forward_mid or '无'}")
-            try:
-                # 完整链路：mid 反解 → 分类 → 清理临时文件 → HTTP 回写
+    # ── 逐条处理 ──────────────────────────────────────────
+    for record_idx, record in enumerate(records, 1):
+        logger.info("")
+        logger.info(f"[{record_idx}/{len(records)}] 开始处理 "
+                    f"mid={record.mid} uid={record.mid_uid} "
+                    f"forward_mid={record.forward_mid or '无'}")
+        try:
+            # 调试入口也使用与正式 worker 相同的命名锁，避免联调时重复送模型。
+            with repo.acquire_record_lock(record) as acquired:
+                if not acquired or not repo.is_pending(record):
+                    logger.info("  └─ ⏭ 已被其他实例处理或不再待处理，跳过")
+                    total_skipped += 1
+                    continue
                 result = pipeline.process_one(
                     mid=record.mid,
                     uid=record.mid_uid,
                     mode=args.mode,
-                    write_back=not args.no_write_back,
+                    write_back=args.write_back,
                     record=record,
                 )
-                if result.success:
-                    total_success += 1
-                    logger.info(f"  └─ ✅ 成功  layer={result.layer} "
-                                f"media_type={result.media_type} "
-                                f"total={result.timings.total_ms:.0f}ms")
-                else:
-                    total_fail += 1
-                    logger.info(f"  └─ ❌ 失败  stage={result.error_stage or 'unknown'} "
-                                f"error={(result.error or '')[:200]}")
-            except Exception as exc:
+            if result.fallback_level_written:
+                total_fallback += 1
+                logger.warning(f"  └─ ⚠️ 失败已兜底回写 level=6 stage={result.error_stage}")
+            elif result.success:
+                total_success += 1
+                logger.info(f"  └─ ✅ 成功  layer={result.layer} "
+                            f"media_type={result.media_type} "
+                            f"total={result.timings.total_ms:.0f}ms")
+            else:
                 total_fail += 1
-                logger.exception(f"  └─ ❌ 处理异常 mid={record.mid} error={exc}")
-                try:
-                    repo.update_record_failure(conn, record, str(exc))
-                except Exception as write_exc:
-                    logger.exception(f"    失败记录再次写入异常 mid={record.mid} error={write_exc}")
+                logger.info(f"  └─ ❌ 失败  stage={result.error_stage or 'unknown'} "
+                            f"error={(result.error or '')[:200]}")
+        except Exception as exc:
+            total_fail += 1
+            logger.exception(f"  └─ ❌ 处理异常 mid={record.mid} error={exc}")
+            try:
+                repo.update_record_failure(None, record, str(exc))
+            except Exception as write_exc:
+                logger.exception(f"    失败记录再次写入异常 mid={record.mid} error={write_exc}")
 
-        # ── 汇总报告 ──────────────────────────────────────────
-        total_elapsed = (datetime.now() - total_start).total_seconds()
-        success_rate = total_success / len(records) * 100
+    # ── 汇总报告 ──────────────────────────────────────────
+    total_elapsed = (datetime.now() - total_start).total_seconds()
+    completed_count = total_success + total_fallback
+    attempted_count = total_success + total_fallback + total_fail
+    success_rate = completed_count / attempted_count * 100 if attempted_count else 100.0
 
-        logger.info("")
-        logger.info("=" * 70)
-        logger.info("单任务流水线汇总报告")
-        logger.info("=" * 70)
-        logger.info(f"task_id:      {task.task_id}")
-        logger.info(f"分表:         {task.shard_table}")
-        logger.info(f"运行时间:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"总耗时:       {total_elapsed:.1f}s")
-        logger.info(f"处理记录数:   {len(records)}")
-        logger.info(f"成功:         {total_success}")
-        logger.info(f"失败:         {total_fail}")
-        logger.info(f"成功率:       {success_rate:.1f}%")
-        logger.info("=" * 70)
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("单任务流水线汇总报告")
+    logger.info("=" * 70)
+    logger.info(f"task_id:      {task.task_id}")
+    logger.info(f"分表:         {task.shard_table}")
+    logger.info(f"运行时间:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"总耗时:       {total_elapsed:.1f}s")
+    logger.info(f"处理记录数:   {len(records)}")
+    logger.info(f"成功:         {total_success}")
+    logger.info(f"失败兜底(6):  {total_fallback}")
+    logger.info(f"失败:         {total_fail}")
+    logger.info(f"跳过:         {total_skipped}")
+    logger.info(f"成功率:       {success_rate:.1f}%")
+    logger.info("=" * 70)
 
-        logger.info("\n输出文件:")
-        logger.info("  日志:       logs/classify.log")
-        logger.info("  反解失败:   logs/反解失败汇总.txt")
-        logger.info("  分类结果:   output/result.tsv")
+    logger.info("\n输出文件:")
+    logger.info("  主日志:     logs/single_task_pipeline.log")
+    logger.info(f"  运行审计:   {pipeline.audit.path}")
+    logger.info(f"  运行汇总:   {pipeline.audit.summary_path}")
 
-        # 退出码：成功率低于 80% 返回 1
-        sys.exit(0 if success_rate >= 80 else 1)
+    # 退出码：成功率低于 80% 返回 1
+    pipeline.audit.finalize({
+        "mode": "single_task",
+        "task_id": task.task_id,
+        "processed": len(records),
+        "success": total_success,
+        "fallback": total_fallback,
+        "fail": total_fail,
+        "skipped": total_skipped,
+    })
+    sys.exit(0 if success_rate >= 80 else 1)
 
 
 if __name__ == "__main__":

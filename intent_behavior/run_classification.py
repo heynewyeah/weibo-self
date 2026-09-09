@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-正式分类运行入口
-================
-生产环境主脚本，支持四种输入源：
+分类预演与本地调试入口
+====================
+用于单条、文件、分表的只读预演，支持四种输入源：
   1. 单条：--mid + --uid
   2. 批量文件：--input-file（JSONL/TSV）
   3. MySQL 任务驱动：--from-tasks + --limit（查询 super_mid_task → 路由到 nature_ad_super_mid_x）
@@ -25,19 +25,19 @@
   # 批量文件（JSONL）
   python3 run_classification.py --input-file data/input.jsonl --workers 5
 
-  # MySQL 任务驱动：自动查询 super_mid_task 有效任务，路由到分表，最多处理 100 条并回写
+  # MySQL 任务驱动：自动查询 super_mid_task 有效任务，路由到分表后只读预演
   python3 run_classification.py \
-      --from-tasks --limit 100 \
-      --mode auto --write-back
+      --from-tasks --limit 100 --mode auto
 
-  # MySQL 分表直读：直接读取 nature_ad_super_mid_1 的 level=0 数据
+  # MySQL 分表直读：直接读取 nature_ad_super_mid_1 的 level=0 数据并预演
   python3 run_classification.py \
       --shard-index 1 --customer-id 2608812381 --limit 100 \
-      --mode auto --write-back
+      --mode auto
 
 输出：
   - 终端：每条 mid 的处理结果和耗时
-  - logs/YYYYMMDD_error.log：失败记录
+  - logs/run_classification.log：运行日志（按天轮转）
+  - logs/runs/YYYYMMDD/<run_id>.jsonl：结构化处理审计
   - output/run_classification_<timestamp>.json：完整结果
   - output/run_classification_<timestamp>_summary.txt：摘要
 """
@@ -334,20 +334,25 @@ def main():
 
     # ── 初始化 ────────────────────────────────────────────────
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    logger = setup_logger("run_classification", log_dir=os.path.join(PROJECT_DIR, "logs"))
-
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logger.info("=" * 70)
-    logger.info("正式分类运行入口启动")
-    logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"配置文件: {args.config}")
-    logger.info(f"处理模式: {args.mode}")
-    logger.info(f"并发数: {args.workers}")
 
     # ── 加载配置 ──────────────────────────────────────────────
     import yaml
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    logger = setup_logger(
+        "run_classification",
+        log_dir=os.path.join(PROJECT_DIR, config.get("logging", {}).get("dir", "logs")),
+        level=config.get("logging", {}).get("level", "INFO"),
+        retention_days=int(config.get("logging", {}).get("retention_days", 30)),
+    )
+    logger.info("=" * 70)
+    logger.info("分类预演与本地调试入口启动")
+    logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"配置文件: {args.config}")
+    logger.info(f"处理模式: {args.mode}")
+    logger.info(f"并发数: {args.workers}")
 
     if args.timeout > 0:
         config["api"]["timeout"] = args.timeout
@@ -420,6 +425,13 @@ def main():
         logger.warning("没有待处理数据")
         sys.exit(0)
 
+    if args.write_back and (args.from_tasks or args.shard_index > 0):
+        logger.error(
+            "run_classification.py 仅用于预览/调试；MySQL 正式回写请使用 worker.py，"
+            "避免绕过命名锁与运行审计的任务级汇总。"
+        )
+        sys.exit(2)
+
     logger.info(f"数据来源: {data_source}")
     logger.info(f"待处理条数: {total}")
     logger.info("=" * 70)
@@ -469,6 +481,11 @@ def main():
     logger.info(f"  摘要:    {output_summary}")
     logger.info(f"  错误日志: logs/{datetime.now().strftime('%Y%m%d')}_error.log")
     logger.info("=" * 70)
+    pipeline.audit.finalize({
+        "mode": "preview",
+        "data_source": data_source,
+        "summary": summary_dict,
+    })
 
     if summary_dict["success_rate"] < 0.8:
         logger.warning(f"成功率 {summary_dict['success_rate']*100:.1f}% 低于 80%，退出码 1")

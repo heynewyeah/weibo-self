@@ -1,4 +1,6 @@
-# MySQL 分表 Worker 设计与运行说明
+# MySQL 分表 Worker 设计与运行说明（历史说明）
+
+> 正式运行请以 [production_runbook.md](production_runbook.md) 为准。本文件保留开发阶段背景，以下旧描述不再代表生产实现。
 
 ## 1. 背景
 
@@ -8,7 +10,7 @@
 - 业务分表：`nature_ad_super_mid_0 ~ nature_ad_super_mid_19`
 - 分片规则：`customer_id % 20`
 - 待处理判定：`level = 0`
-- 结果回写：更新 `level` 与 `level_time`
+- 结果回写：调用 HTTP `update-level`，由服务端仅对 `level=0` 的记录更新 `level` 与 `level_time`
 
 现有分类核心能力可直接复用：
 - [`src/classifier.py`](../src/classifier.py)
@@ -38,7 +40,7 @@
 | 认知层 | 1 |
 | 兴趣层 | 2 |
 | 考虑层 | 3 |
-| 未识别 | 0 |
+| 其他 / 失败兜底 | 6 |
 
 ### 2.2 [`src/worker.py`](../src/worker.py)
 
@@ -58,15 +60,7 @@ python3 worker.py --config config/config.yaml
 
 ### 2.4 [`main.py`](../main.py)
 
-新增模式：
-- `--mode mysql_worker`
-
-示例：
-
-```bash
-python3 main.py --mode mysql_worker --config config/config.yaml --once
-python3 main.py --mode mysql_worker --config config/config.yaml
-```
+本地预演入口的兼容别名；正式 MySQL 持续回写不要通过它启动。
 
 ---
 
@@ -86,7 +80,7 @@ mysql:
   shard_table_prefix: "nature_ad_super_mid_"
   active_task_type: 1
   inactive_exec_status: 5
-  task_customer_id_field: "customer_id"
+  task_customer_id_field: "operator_uid"
 
 worker:
   poll_interval_sec: 10
@@ -106,12 +100,12 @@ worker:
 ## 4. 当前处理逻辑
 
 1. 查询 `super_mid_task`
-2. 过滤：`task_type = 1 AND exec_status != 5`
-3. 获取任务中的 `customer_id`
+2. 过滤：`task_type = 1` 且任务仍在有效窗口
+3. 获取任务中的 `operator_uid`（即 `customer_id`）
 4. 计算分表：`nature_ad_super_mid_{customer_id % 20}`
 5. 查询该分表中：
    - `customer_id = ?`
-   - `super_task_id = task.id`
+   - `super_task_id = task.task_id`
    - `level = 0`
 6. 将记录映射为：
    - `mid -> BlogItem.mid`
@@ -119,11 +113,9 @@ worker:
    - `mid_text -> BlogItem.content`
    - `mid_pids -> BlogItem.pic_ids`
    - `mid_fids -> BlogItem.media_ids`
-7. 调用 [`BlogClassifier.classify_item()`](../src/classifier.py)
-8. 回写：
-   - `level`
-   - `level_time`
-   - `mtime = CURRENT_TIMESTAMP`
+7. 使用 MySQL 命名锁互斥，重新确认记录仍为 `level=0`
+8. 调用完整 Pipeline（反解、转发审查、图文视频、分类）
+9. HTTP 回写，并在超时/data=0 时只读确认最终 level
 
 ---
 
@@ -136,30 +128,23 @@ worker:
 - 分类回写
 - 独立 worker 入口
 
-### 待优化
-1. **处理失败状态增强**
-   - 当前失败仅记日志，未写入错误字段
-   - 后续可补充回写：`transfer_score_error_code` / `transfer_score_error_detail` 或新增 AI 错误字段
+### 当前边界
+
+1. **失败处理**
+   - 反解、模型、媒体等可确认的处理失败会按约定回写 `level=6`；
+   - 审计中保留真实 `error_stage/error`，`level=6` 不等于模型正常分类；
+   - HTTP 回写失败不补写 6，因为原请求可能已在服务端落库，必须先读库确认。
 
 2. **并发消费**
-   - 当前为串行版本，优先保证正确性
-   - 后续可按任务粒度或记录粒度并发，但要先解决数据库事务与幂等问题
+   - 当前单进程串行；多实例时使用 MySQL 命名锁与 `level=0` 二次确认防重；
+   - 上线前仍需执行唯一约束与组合索引迁移。
 
-3. **任务 customer_id 字段名确认**
-   - 当前默认 `super_mid_task.customer_id`
-   - 如真实字段名不同，只需改 [`config/config.yaml`](../config/config.yaml)
+3. **任务路由**
+   - 只使用 `super_mid_task.operator_uid`，不支持 `test_customer_id` 兜底。
 
-4. **开发环境只有 [`nature_ad_super_mid_1`](../nature_ad_super_mid%20分表业务数据库开发说明文档)**
-   - 当前代码已做表存在性检测
-   - 其余分表未建时会自动跳过
-
-5. **失败重试机制**
-   - 当前 `level=0` 才处理，未做 retry 标识
-   - 后续建议增加独立 AI 状态字段，避免与业务 `level` 强耦合
-
-6. **结果一致性增强**
-   - 当前依赖模型固定参数：`temperature=0.0`、`seed=42`、`enable_thinking=false`
-   - 后续可加 `mid -> result` 缓存或重复调用一致性校验脚本
+4. **失败重试**
+   - 当前业务约定将可确认失败终态写为 6，不再自动重试；
+   - 需要复盘/人工重跑时依据 JSONL/MySQL 审计定位后受控处理。
 
 ---
 
