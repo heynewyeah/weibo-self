@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """
-原生内容站 AI 分层生产前自检（只读）。
+上线前检查脚本（只读，不修改数据）。
+
+什么时候运行：
+  - 第一次启动 worker 前；
+  - 修改 MySQL 路由、表结构、索引或配置后；
+  - 排查 worker 为什么查不到任务/数据时。
+
+它会做什么：
+  - 检查是否按 operator_uid 路由分表；
+  - 检查任务表、现有分表和审计表是否存在；
+  - 检查同一 customer_id + task_id + mid 是否有重复数据；
+  - 检查 worker 查询 level=0 所需的索引是否存在。
+
+它不会做什么：
+  - 不调用模型、不下载媒体、不回写 level；
+  - 不删除、不更新、不插入任何业务数据；
+  - 不创建或修改表/索引。
 
 检查内容：
 1. 配置是否把 super_mid_task.operator_uid 用作 customer_id 路由；
@@ -11,7 +27,10 @@
 
 用法：
   cd intent_behavior
+  # 常规检查：索引缺失只警告
   python3 scripts/production_preflight.py
+
+  # 上线前推荐：索引缺失也视为检查失败
   python3 scripts/production_preflight.py --strict
 
 退出码：

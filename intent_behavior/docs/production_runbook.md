@@ -38,9 +38,9 @@ super_mid_task.operator_uid（即 customer_id）
    pip install -r requirements.txt
    ```
 
-2. 由 DBA 审核并执行 [production_schema_migration.sql](../sql/production_schema_migration.sql)。
+2. 数据库结构已于 **2026-09-09** 完成：现有 `_0/_1` 分表的唯一约束和消费索引、`super_mid_task.task_id` 唯一索引、任务扫描索引，以及 `nature_ad_mid_ai_audit` 审计表均已创建。
 
-   必须先处理 `(customer_id, super_task_id, mid)` 重复数据，再增加唯一约束。
+   [production_schema_migration.sql](../sql/production_schema_migration.sql) 保留为后续新增分表或迁移其他环境时的操作说明；运行 worker 前不需要重复执行。
 
 3. 运行只读预检：
 
@@ -60,11 +60,19 @@ super_mid_task.operator_uid（即 customer_id）
    python3 run_single_task.py --task-id <task_id> --limit 10
    ```
 
-6. 小批量正式回写：
+6. 小批量正式回写（一轮完成即退出）：
 
    ```bash
    python3 worker.py --config config/config.yaml --once
    ```
+
+7. 确认审计、日志和回写结果正常后，启动持续消费：
+
+   ```bash
+   python3 worker.py --config config/config.yaml
+   ```
+
+   默认每 10 秒查询一轮有效任务和 `level=0` 数据，直到人工按 `Ctrl+C` 停止。
 
 ## 路由与业务规则
 
