@@ -12,6 +12,7 @@
   - 检查任务表、现有分表和审计表是否存在；
   - 检查同一 customer_id + task_id + mid 是否有重复数据；
   - 检查 worker 查询 level=0 所需的索引是否存在。
+  - 检查当前账号是否具备必要的读权限；若启用 MySQL 审计，检查 INSERT 权限。
 
 它不会做什么：
   - 不调用模型、不下载媒体、不回写 level；
@@ -23,7 +24,7 @@
 2. 分表是否存在、待处理查询是否具备推荐组合索引；
 3. 是否存在 (customer_id, super_task_id, mid) 重复数据；
 4. task_id 是否重复；
-5. 可选审计表是否存在（audit.mysql_enabled=true 时必检）。
+5. 可选审计表是否存在，且当前账号具备 INSERT 权限（audit.mysql_enabled=true 时必检）。
 
 用法：
   cd intent_behavior
@@ -60,6 +61,26 @@ def get_indexes(conn, table: str) -> Dict[str, List[str]]:
     for row in rows:
         indexes.setdefault(row["Key_name"], []).append((row["Seq_in_index"], row["Column_name"]))
     return {name: [col for _, col in sorted(cols)] for name, cols in indexes.items()}
+
+
+def has_privilege(conn, schema: str, table: str, privilege: str) -> bool:
+    """检查当前 MySQL 账号对目标表/库是否具备指定权限。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.table_privileges
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND privilege_type = %s
+            UNION ALL
+            SELECT 1 FROM information_schema.schema_privileges
+            WHERE table_schema = %s
+              AND privilege_type = %s
+            LIMIT 1
+            """,
+            (schema, table, privilege.upper(), schema, privilege.upper()),
+        )
+        return cur.fetchone() is not None
 
 
 def main() -> None:
@@ -133,6 +154,10 @@ def main() -> None:
                 table = audit_cfg.get("mysql_table", "nature_ad_mid_ai_audit")
                 if not repo.table_exists(conn, table):
                     failures.append(f"audit.mysql_enabled=true 但审计表不存在: {table}")
+                elif not has_privilege(conn, mysql_cfg["database"], table, "INSERT"):
+                    failures.append(
+                        f"audit.mysql_enabled=true 但当前账号无 {table} 的 INSERT 权限"
+                    )
     except Exception as exc:
         print(f"[FAIL] 数据库自检失败: {exc}")
         sys.exit(2)

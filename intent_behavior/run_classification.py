@@ -346,6 +346,9 @@ def main():
         log_dir=os.path.join(PROJECT_DIR, config.get("logging", {}).get("dir", "logs")),
         level=config.get("logging", {}).get("level", "INFO"),
         retention_days=int(config.get("logging", {}).get("retention_days", 30)),
+        console_enabled=bool(config.get("logging", {}).get("console_enabled", True)),
+        file_enabled=bool(config.get("logging", {}).get("file_enabled", True)),
+        storage_config=config.get("storage", {}),
     )
     logger.info("=" * 70)
     logger.info("分类预演与本地调试入口启动")

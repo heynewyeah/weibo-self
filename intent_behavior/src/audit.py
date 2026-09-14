@@ -18,13 +18,16 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
+from .utils import local_file_writes_allowed
+
 
 class RunAudit:
     """一个进程运行实例对应一个审计文件。"""
 
     def __init__(self, config: Dict[str, Any], logger_: Optional[logging.Logger] = None):
         cfg = config.get("audit", {})
-        self.enabled = bool(cfg.get("enabled", True))
+        # local_enabled 取代历史 enabled；保留 enabled 作为兼容别名，避免旧配置失效。
+        self.local_enabled = bool(cfg.get("local_enabled", cfg.get("enabled", True)))
         self.logger = logger_ or logging.getLogger(__name__)
         self.record_model_output = bool(cfg.get("record_model_output", True))
         self.max_model_output_chars = int(cfg.get("max_model_output_chars", 2000))
@@ -33,6 +36,8 @@ class RunAudit:
         self.mysql_table = str(cfg.get("mysql_table", "nature_ad_mid_ai_audit"))
         self.mysql_flush_batch_size = max(1, int(cfg.get("mysql_flush_batch_size", 1)))
         self.mysql_cfg = config.get("mysql", {})
+        self.storage_cfg = config.get("storage", {})
+        self._local_disk_warning_reported = False
         self._db_rows = []
 
         project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -47,18 +52,44 @@ class RunAudit:
         self.task_counts: Dict[str, Counter] = {}
         self._finalized = False
 
-        if self.enabled:
-            day_dir = os.path.join(self.base_dir, now.strftime("%Y%m%d"))
-            os.makedirs(day_dir, exist_ok=True)
-            self.path = os.path.join(day_dir, f"{self.run_id}.jsonl")
-            self.summary_path = os.path.join(day_dir, f"{self.run_id}_summary.json")
-            self.cleanup_expired()
-            self.write_event("run_started", {
-                "run_id": self.run_id,
-                "started_at": now.isoformat(),
-                "host": socket.gethostname(),
-                "pid": os.getpid(),
-            })
+        if self.local_enabled and self._can_write_local():
+            try:
+                day_dir = os.path.join(self.base_dir, now.strftime("%Y%m%d"))
+                os.makedirs(day_dir, exist_ok=True)
+                self.path = os.path.join(day_dir, f"{self.run_id}.jsonl")
+                self.summary_path = os.path.join(day_dir, f"{self.run_id}_summary.json")
+                self.cleanup_expired()
+                self.write_event("run_started", {
+                    "run_id": self.run_id,
+                    "started_at": now.isoformat(),
+                    "host": socket.gethostname(),
+                    "pid": os.getpid(),
+                })
+            except OSError as exc:
+                self.path = ""
+                self.summary_path = ""
+                self.logger.warning(
+                    "创建本地 JSONL 审计目录失败，已仅保留控制台/MySQL 审计: %s", exc
+                )
+        elif self.local_enabled:
+            self.logger.warning(
+                "本地 JSONL 审计因磁盘空间阈值被关闭；MySQL 审计=%s",
+                "开启" if self.mysql_enabled else "关闭",
+            )
+
+    def _can_write_local(self) -> bool:
+        """低磁盘时停止 JSONL/summary 写入，避免审计文件耗尽运行盘。"""
+        allowed = local_file_writes_allowed(
+            {"storage": self.storage_cfg},
+            self.base_dir,
+        )
+        if not allowed and not self._local_disk_warning_reported:
+            self._local_disk_warning_reported = True
+            self.logger.warning(
+                "可用磁盘低于 storage.min_free_mb，本地 JSONL 审计将不再写入: %s",
+                self.base_dir,
+            )
+        return allowed
 
     def _queue_db_result(self, payload: Dict[str, Any]) -> None:
         """可选写 MySQL 审计表；写失败不影响主链路，JSONL 始终作为保底。"""
@@ -103,7 +134,7 @@ class RunAudit:
             self.logger.warning("写入 MySQL 分类审计失败（JSONL 已保留）: %s", exc)
 
     def write_event(self, event: str, payload: Dict[str, Any]) -> None:
-        if not self.enabled:
+        if not self.local_enabled or not self.path or not self._can_write_local():
             return
         data = {
             "event": event,
@@ -203,7 +234,7 @@ class RunAudit:
 
     def finalize(self, extra: Optional[Dict[str, Any]] = None) -> None:
         """写入运行结束事件和便于读取的汇总 JSON；可重复调用。"""
-        if not self.enabled or self._finalized:
+        if self._finalized:
             return
         self._finalized = True
         self.flush_db()
@@ -217,6 +248,8 @@ class RunAudit:
             **(extra or {}),
         }
         self.write_event("run_finished", payload)
+        if not self.local_enabled or not self.summary_path or not self._can_write_local():
+            return
         try:
             with open(self.summary_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2, default=str)

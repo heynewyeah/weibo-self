@@ -64,16 +64,16 @@ python3 worker.py --config config/config.yaml
 
 ---
 
-## 3. 配置项
+## 3. 配置项（历史示例）
 
-已在 [`config/config.yaml`](../config/config.yaml) 中新增：
+以下仅说明字段含义，连接参数以 [`config/config.yaml`](../config/config.yaml) 当前内容为准；不要复制旧测试库地址、账号或密码：
 
 ```yaml
 mysql:
-  host: "10.79.104.30"
-  port: 3306
-  user: "clue_collect"
-  password: "clue_collect"
+  host: "<由 config.yaml 管理>"
+  port: 9671
+  user: "<由 config.yaml 管理>"
+  password: "<由 config.yaml 管理>"
   database: "clue_collect_common"
   charset: "utf8mb4"
   task_table: "super_mid_task"

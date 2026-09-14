@@ -30,12 +30,12 @@ from .classifier import BlogClassifier
 from .db_client import MySQLTaskRepository, MidRecord
 from .mid_resolver import MidResolverClient, ResolvedBlog
 from .audit import RunAudit
+from .utils import local_file_writes_allowed
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_CACHE_DIR = os.path.join(PROJECT_ROOT, "output", ".cache")
 DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
-RESOLVE_FAIL_LOG = os.path.join(DEFAULT_LOG_DIR, "反解失败汇总.txt")
 RESOLVE_FAIL_HEADER = "插入时间\tmid\tuid\tcustomer_id\tsuper_task_id\tindustry\t重试次数\t错误信息\n"
 
 
@@ -129,6 +129,12 @@ class ClassifyPipeline:
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self.error_log_dir = error_log_dir
+        logging_cfg = config.get("logging", {})
+        self.error_file_enabled = bool(logging_cfg.get("error_file_enabled", True))
+        self.resolve_failure_file_enabled = bool(
+            logging_cfg.get("resolve_failure_file_enabled", False)
+        )
+        self.storage_cfg = config.get("storage", {})
 
         resolver_cfg = config.get("mid_resolver", {})
         self.resolver = MidResolverClient(
@@ -471,9 +477,14 @@ class ClassifyPipeline:
             self.logger.info("启动清理过期媒体缓存: %s 个文件", removed)
 
     def _write_error_log(self, result: ProcessResult):
+        if not self.error_file_enabled:
+            return
         os.makedirs(self.error_log_dir, exist_ok=True)
         date_str = datetime.now().strftime("%Y%m%d")
         error_log_path = os.path.join(self.error_log_dir, f"{date_str}_error.log")
+        if not local_file_writes_allowed({"storage": self.storage_cfg}, error_log_path):
+            self.logger.warning("磁盘空间不足，跳过每日错误文件写入: %s", error_log_path)
+            return
 
         line = (
             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t"
@@ -502,13 +513,19 @@ class ClassifyPipeline:
         单文件追加模式，首次写入时自动添加表头。
         表头：插入时间 / mid / uid / customer_id / super_task_id / industry / 重试次数 / 错误信息
         """
+        if not self.resolve_failure_file_enabled:
+            return
         os.makedirs(self.error_log_dir, exist_ok=True)
+        resolve_fail_log = os.path.join(self.error_log_dir, "反解失败汇总.txt")
+        if not local_file_writes_allowed({"storage": self.storage_cfg}, resolve_fail_log):
+            self.logger.warning("磁盘空间不足，跳过反解失败汇总文件写入: %s", resolve_fail_log)
+            return
 
         # 计算重试次数：检查文件中该 mid 已出现多少次
         retry_count = 1
         try:
-            if os.path.exists(RESOLVE_FAIL_LOG):
-                with open(RESOLVE_FAIL_LOG, "r", encoding="utf-8") as f:
+            if os.path.exists(resolve_fail_log):
+                with open(resolve_fail_log, "r", encoding="utf-8") as f:
                     for line in f:
                         parts = line.split("\t")
                         if len(parts) >= 2 and parts[1] == result.mid:
@@ -517,7 +534,10 @@ class ClassifyPipeline:
             pass
 
         # 如果文件不存在或为空，先写表头
-        need_header = not os.path.exists(RESOLVE_FAIL_LOG) or os.path.getsize(RESOLVE_FAIL_LOG) == 0
+        need_header = (
+            not os.path.exists(resolve_fail_log)
+            or os.path.getsize(resolve_fail_log) == 0
+        )
 
         line = (
             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t"
@@ -530,7 +550,7 @@ class ClassifyPipeline:
             f"{result.error.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
         )
         try:
-            with open(RESOLVE_FAIL_LOG, "a", encoding="utf-8") as f:
+            with open(resolve_fail_log, "a", encoding="utf-8") as f:
                 if need_header:
                     f.write(RESOLVE_FAIL_HEADER)
                 f.write(line)

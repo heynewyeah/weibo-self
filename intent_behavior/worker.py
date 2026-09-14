@@ -62,7 +62,14 @@ def main():
         log_dir=config.get("logging", {}).get("dir", "logs"),
         level=config.get("logging", {}).get("level", "INFO"),
         retention_days=int(config.get("logging", {}).get("retention_days", 30)),
+        console_enabled=bool(config.get("logging", {}).get("console_enabled", True)),
+        file_enabled=bool(config.get("logging", {}).get("file_enabled", True)),
+        storage_config=config.get("storage", {}),
     )
+    if not bool(config.get("logging", {}).get("file_enabled", True)):
+        logger.warning("本地主日志已按配置关闭；请确认 MySQL 审计或外部日志平台可用于追溯。")
+    if not bool(config.get("audit", {}).get("local_enabled", config.get("audit", {}).get("enabled", True))):
+        logger.warning("本地 JSONL 审计已按配置关闭。")
 
     worker = create_worker(config, logger)
     try:

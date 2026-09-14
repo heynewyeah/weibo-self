@@ -1,6 +1,6 @@
 # 原生内容站 AI 分层生产运行手册
 
-最后更新：2026-09-09
+最后更新：2026-09-14
 
 ## 唯一正式入口
 
@@ -39,9 +39,9 @@ super_mid_task.operator_uid（即 customer_id）
    pip install -r requirements.txt
    ```
 
-2. 数据库结构已于 **2026-09-09** 完成：现有 `_0/_1` 分表的唯一约束和消费索引、`super_mid_task.task_id` 唯一索引、任务扫描索引，以及 `nature_ad_mid_ai_audit` 审计表均已创建。
+2. 正式库已切换到 `config/config.yaml` 的 MySQL 配置。旧测试库仅作为配置注释保留。不要根据旧环境的迁移历史推断新库已具备索引、唯一约束或 MySQL 审计表。
 
-   [production_schema_migration.sql](../sql/production_schema_migration.sql) 保留为后续新增分表或迁移其他环境时的操作说明；运行 worker 前不需要重复执行。
+   [production_schema_migration.sql](../sql/production_schema_migration.sql) 是新库的 DDL 模板，不会由 worker 自动执行。当前账号可能只有读取权限；是否执行、何时执行必须由具备 DDL 权限的 DBA 根据预检结果决定。
 
 3. 运行只读预检：
 
@@ -123,13 +123,27 @@ super_mid_task.operator_uid（即 customer_id）
 | 运行汇总 | `logs/runs/YYYYMMDD/<run_id>_summary.json` | 任务级/运行级汇总 | 30 天 |
 | MySQL 审计 | `nature_ad_mid_ai_audit` | 按 task/mid 查询历史 | 90 天，定时分批清理 |
 
-MySQL 审计表已创建并已开启。由 cron / XXL 每日低峰执行：
+MySQL 审计默认关闭，避免新正式库尚未创建审计表或当前账号无 INSERT 权限时干扰主链路。完成下列条件后，才将 `config.yaml` 的 `audit.mysql_enabled` 改为 `true`：
+
+1. `nature_ad_mid_ai_audit` 已存在；
+2. 当前正式账号具备该表的 INSERT 权限；
+3. `python3 scripts/production_preflight.py --strict` 通过。
+
+启用后，由 cron / XXL 每日低峰执行：
 
 ```bash
 python3 scripts/cleanup_mysql_audit.py --execute
 ```
 
 默认先运行不带 `--execute` 的命令可只读预览过期记录数。
+
+## 本地磁盘保护与日志开关
+
+- `storage.min_free_mb` 默认是 5120；可用空间低于阈值时，程序自动停止本地主日志、JSONL、错误汇总和媒体下载，控制台仍保留。
+- 低磁盘时，图片/视频自动降级文本分类；已有临时媒体在单条结束和启动过期清理中删除。
+- 若人工关闭本地落盘，将 `logging.file_enabled`、`logging.error_file_enabled`、`audit.local_enabled` 设为 `false`。此操作前必须确认 MySQL 审计已启用且可写，或已有外部日志平台，否则无法追溯 case。
+
+完整的数据读写和排障入口见项目根目录 [README.md](../README.md)。
 
 ## 排障
 

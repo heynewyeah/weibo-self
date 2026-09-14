@@ -5,9 +5,27 @@
 import os
 import re
 import logging
+import shutil
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
+
+
+class DiskGuardedTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """空间低于阈值时停止本地日志写入，避免日志把运行盘写满。"""
+
+    def __init__(self, *args, storage_config: Optional[Dict[str, Any]] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.storage_config = storage_config or {}
+        self._low_disk_reported = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not local_file_writes_allowed({"storage": self.storage_config}, self.baseFilename):
+            # 这里不能再通过本 logger 记录 warning，否则会递归写入同一文件。
+            # 控制台由业务入口的启动提示和后续日志继续提供。
+            self._low_disk_reported = True
+            return
+        super().emit(record)
 
 
 def setup_logger(
@@ -15,11 +33,14 @@ def setup_logger(
     log_dir: str = "logs",
     level: str = "INFO",
     retention_days: int = 30,
+    console_enabled: bool = True,
+    file_enabled: bool = True,
+    storage_config: Optional[Dict[str, Any]] = None,
 ) -> logging.Logger:
     """
-    初始化日志器，同时输出到控制台和文件。
+    初始化日志器，可分别输出到控制台和本地文件。
 
-    文件日志按自然日自动轮转，默认保留 30 天：
+    文件日志启用时按自然日自动轮转，默认保留 30 天：
     - 当前日志：{log_dir}/{name}.log
     - 历史日志：{name}.log.YYYY-MM-DD
 
@@ -28,12 +49,12 @@ def setup_logger(
         log_dir: 日志目录
         level: 日志级别
         retention_days: 保留的历史天数
+        console_enabled: 是否输出到终端
+        file_enabled: 是否写入本地日志文件
     """
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{name}.log")
-
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.propagate = False
 
     if logger.handlers:
         return logger
@@ -43,21 +64,63 @@ def setup_logger(
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    if console_enabled:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
-    file_handler = TimedRotatingFileHandler(
-        log_file,
-        when="midnight",
-        interval=1,
-        backupCount=retention_days,
-        encoding="utf-8",
-    )
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    if file_enabled:
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"{name}.log")
+        file_handler = DiskGuardedTimedRotatingFileHandler(
+            log_file,
+            when="midnight",
+            interval=1,
+            backupCount=retention_days,
+            encoding="utf-8",
+            storage_config=storage_config,
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    # 禁用全部输出时，避免 logging 的 lastResort handler 向 stderr 额外写入。
+    if not logger.handlers:
+        logger.addHandler(logging.NullHandler())
 
     return logger
+
+
+def local_file_writes_allowed(
+    config: Dict,
+    target_path: str,
+) -> bool:
+    """
+    判断当前磁盘空间是否允许继续写本地文件。
+
+    本地文件包括主日志、JSONL 审计、错误汇总与媒体缓存。空间不足时，调用方
+    应保留控制台输出；若 MySQL 审计已配置且具备写权限，仍可保留远端审计。
+    """
+    storage_cfg = config.get("storage", {}) if config else {}
+    if not bool(storage_cfg.get("low_disk_disable_local_writes", True)):
+        return True
+
+    min_free_mb = max(0, int(storage_cfg.get("min_free_mb", 0) or 0))
+    if min_free_mb <= 0:
+        return True
+
+    probe_path = os.path.abspath(target_path)
+    while not os.path.exists(probe_path):
+        parent = os.path.dirname(probe_path)
+        if parent == probe_path:
+            break
+        probe_path = parent
+
+    try:
+        free_mb = shutil.disk_usage(probe_path).free / (1024 * 1024)
+    except OSError:
+        # 无法检查空间时不静默阻断运行，实际写入异常仍由调用方记录。
+        return True
+    return free_mb >= min_free_mb
 
 
 def extract_label(

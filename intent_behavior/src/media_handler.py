@@ -14,6 +14,7 @@ import logging
 import requests
 from typing import Optional, List, Dict, Any
 
+from .utils import local_file_writes_allowed
 
 # 项目根目录与默认缓存目录
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -26,7 +27,12 @@ logger = logging.getLogger(__name__)
 class ImageHandler:
     """图片处理器：pid → URL → 下载 → base64"""
 
-    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        logger: Optional[logging.Logger] = None,
+        storage_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         Args:
             config: media.image 配置段
@@ -36,6 +42,7 @@ class ImageHandler:
         self.download_timeout = config.get("download_timeout", 30)
         self.max_images = config.get("max_images_per_request", 3)
         self.logger = logger or logging.getLogger(__name__)
+        self.storage_config = storage_config or {}
 
     def pid_to_url(self, pid: str) -> str:
         """
@@ -101,6 +108,9 @@ class ImageHandler:
         Returns:
             成功返回 True，失败返回 False
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, save_path):
+            self.logger.warning("磁盘空间不足，跳过图片下载并降级文本: %s", url)
+            return False
         try:
             resp = requests.get(url, timeout=self.download_timeout, stream=True)
             resp.raise_for_status()
@@ -140,6 +150,9 @@ class ImageHandler:
         Returns:
             成功下载的图片本地路径列表
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, tmp_dir):
+            self.logger.warning("磁盘空间不足，跳过图片处理并降级文本")
+            return []
         os.makedirs(tmp_dir, exist_ok=True)
         downloaded = []
 
@@ -164,7 +177,12 @@ class VideoHandler:
       - frame 模式：获取视频URL → 下载视频 → OpenCV抽帧 → 多模态分类
     """
 
-    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        logger: Optional[logging.Logger] = None,
+        storage_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         Args:
             config: media.video 配置段
@@ -181,6 +199,7 @@ class VideoHandler:
         # 视频处理模式：cover（封面图）或 frame（抽帧）
         self.video_mode = config.get("video_mode", "cover")
         self.logger = logger or logging.getLogger(__name__)
+        self.storage_config = storage_config or {}
 
     def get_video_info(self, media_id: str, customer_id: str = None) -> Dict[str, str]:
         """
@@ -264,6 +283,9 @@ class VideoHandler:
         Returns:
             成功返回 True，失败返回 False
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, save_path):
+            self.logger.warning("磁盘空间不足，跳过视频封面下载并降级文本: %s", cover_url)
+            return False
         try:
             resp = requests.get(cover_url, timeout=30, stream=True)
             resp.raise_for_status()
@@ -291,6 +313,9 @@ class VideoHandler:
         Returns:
             成功返回 True，失败返回 False
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, save_path):
+            self.logger.warning("磁盘空间不足，跳过视频下载并降级封面: %s", url)
+            return False
         try:
             resp = requests.get(url, timeout=self.download_timeout, stream=True)
             resp.raise_for_status()
@@ -353,6 +378,9 @@ class VideoHandler:
             帧图片路径列表（按时间顺序），失败返回空列表
         """
         n = num_frames or self.extract_frames_count
+        if not local_file_writes_allowed({"storage": self.storage_config}, output_dir):
+            self.logger.warning("磁盘空间不足，跳过视频抽帧并降级封面")
+            return []
         os.makedirs(output_dir, exist_ok=True)
 
         try:
@@ -431,6 +459,9 @@ class VideoHandler:
         Returns:
             封面图路径列表（通常只有1张），失败返回空列表
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, tmp_dir):
+            self.logger.warning("磁盘空间不足，跳过视频封面处理并降级文本")
+            return []
         os.makedirs(tmp_dir, exist_ok=True)
         cover_url = self.get_cover_url(media_id, customer_id)
         if not cover_url:
@@ -458,6 +489,9 @@ class VideoHandler:
         Returns:
             帧图片路径列表，失败返回空列表
         """
+        if not local_file_writes_allowed({"storage": self.storage_config}, tmp_dir):
+            self.logger.warning("磁盘空间不足，跳过视频抽帧并降级封面")
+            return []
         os.makedirs(tmp_dir, exist_ok=True)
         video_url = self.get_video_url(media_id, customer_id)
         if not video_url:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# query_detail.sh — 查询 nature_ad_super_mid_x 明细表
+# query_detail-明细表查询.sh — 查询 nature_ad_super_mid_x 明细表（历史人工工具）
 # =============================================================
 # 功能：
 #   查询分表中的博文明细数据，支持按 mid / customer_id / level 等条件过滤。
@@ -8,21 +8,24 @@
 #
 # 用法：
 #   # 查询分表 1 中 level=0 的前 20 条
-#   bash sql/query_detail.sh --shard-index 1
+#   bash sql/query_detail-明细表查询.sh --shard-index 1
 #
 #   # 按 mid 精确查询
-#   bash sql/query_detail.sh --shard-index 1 --mid 5239377989207686
+#   bash sql/query_detail-明细表查询.sh --shard-index 1 --mid 5239377989207686
 #
 #   # 按 customer_id 过滤
-#   bash sql/query_detail.sh --shard-index 1 --customer-id 2608812381
+#   bash sql/query_detail-明细表查询.sh --shard-index 1 --customer-id 2608812381
 #
 #   # 查所有 level（不限 level=0）
-#   bash sql/query_detail.sh --shard-index 1 --all-levels
+#   bash sql/query_detail-明细表查询.sh --shard-index 1 --all-levels
 #
 #   # 查转发博文
-#   bash sql/query_detail.sh --shard-index 1 --forward-only
+#   bash sql/query_detail-明细表查询.sh --shard-index 1 --forward-only
 #
 # 数据库：clue_collect_common
+# 状态：历史人工查询脚本。正式排障优先使用 README 中的
+# scripts/manual_classify_mid.py 与 scripts/production_preflight.py。
+# 连接信息必须通过环境变量提供，本脚本不再内置测试库账号密码。
 # 作者：xuanyu11
 # 创建时间：2026-08-26
 # =============================================================
@@ -30,11 +33,11 @@
 set -euo pipefail
 
 # ── 数据库连接 ──
-DB_HOST="10.79.104.30"
-DB_PORT=3306
-DB_USER="clue_collect"
-DB_PASS="clue_collect"
-DB_NAME="clue_collect_common"
+DB_HOST="${MYSQL_HOST:-}"
+DB_PORT="${MYSQL_PORT:-9671}"
+DB_USER="${MYSQL_USER:-}"
+DB_PASS="${MYSQL_PASSWORD:-}"
+DB_NAME="${MYSQL_DATABASE:-clue_collect_common}"
 TABLE_PREFIX="nature_ad_super_mid_"
 
 # ── 参数解析 ──
@@ -56,7 +59,7 @@ while [[ $# -gt 0 ]]; do
         --forward-only) FORWARD_ONLY=true; shift ;;
         --limit)        LIMIT="$2"; shift 2 ;;
         -h|--help)
-            echo "用法: bash sql/query_detail.sh [选项]"
+            echo "用法: bash sql/query_detail-明细表查询.sh [选项]"
             echo "  --shard-index N      分表索引（必填），如 1 表示 nature_ad_super_mid_1"
             echo "  --mid MID            按 mid 精确查询"
             echo "  --customer-id ID     按 customer_id 过滤"
@@ -72,12 +75,16 @@ done
 
 if [ -z "$SHARD_INDEX" ]; then
     echo "[ERROR] 必须指定 --shard-index"
-    echo "用法: bash sql/query_detail.sh --shard-index 1 [--mid xxx]"
+    echo "用法: bash sql/query_detail-明细表查询.sh --shard-index 1 [--mid xxx]"
     exit 1
 fi
 
 TABLE_NAME="${TABLE_PREFIX}${SHARD_INDEX}"
-MYSQL_CMD="mysql -h${DB_HOST} -P${DB_PORT} -u${DB_USER} -p${DB_PASS} ${DB_NAME} -N -B"
+if [[ -z "$DB_HOST" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
+    echo "[ERROR] 请通过 MYSQL_HOST、MYSQL_USER、MYSQL_PASSWORD 提供连接信息；本历史脚本不再内置账号密码。"
+    exit 2
+fi
+MYSQL_CMD=(mysql "-h${DB_HOST}" "-P${DB_PORT}" "-u${DB_USER}" "-p${DB_PASS}" "${DB_NAME}" -N -B)
 
 # ── 构造 WHERE 条件 ──
 WHERE="1=1"
@@ -103,13 +110,13 @@ echo "LIMIT: ${LIMIT}"
 echo ""
 
 # 先检查表是否存在
-TABLE_EXISTS=$(${MYSQL_CMD} -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='${TABLE_NAME}' LIMIT 1;" 2>/dev/null || echo "")
+TABLE_EXISTS=$("${MYSQL_CMD[@]}" -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='${TABLE_NAME}' LIMIT 1;" 2>/dev/null || echo "")
 if [ -z "$TABLE_EXISTS" ]; then
     echo "[ERROR] 表 ${TABLE_NAME} 不存在"
     exit 1
 fi
 
-${MYSQL_CMD} -e "
+"${MYSQL_CMD[@]}" -e "
 SELECT
     id,
     customer_id,
@@ -120,7 +127,7 @@ SELECT
     LEFT(mid_pids, 60) AS mid_pids_preview,
     LEFT(mid_fids, 60) AS mid_fids_preview,
     forward_mid,
-    LEFT(forward_text, 60) AS forward_text_preview,
+    LEFT(forward_mid_text, 60) AS forward_text_preview,
     level
 FROM ${TABLE_NAME}
 WHERE ${WHERE}
@@ -141,7 +148,7 @@ echo ""
 
 # 统计信息
 echo "==================== 统计信息 ===================="
-${MYSQL_CMD} -e "
+"${MYSQL_CMD[@]}" -e "
 SELECT
     level,
     COUNT(*) AS cnt,

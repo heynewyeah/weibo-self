@@ -1,5 +1,9 @@
 -- 原生内容站 AI 分层：生产上线前数据库迁移
 -- ================================================================
+-- 适用范围：新正式库或新增分表的迁移模板。
+-- 注意：2026-09-09 的执行历史仅对应旧测试环境，不能据此判断 2026-09-14
+--       切换后的正式库已具备相同索引、唯一约束或审计表。
+--
 -- 执行前要求：
 -- 1. 先在预发验证，再在低峰期执行生产；
 -- 2. 先执行下方“重复数据检查”，确认无重复后再加唯一索引；
@@ -34,7 +38,7 @@ ALTER TABLE nature_ad_super_mid_1
   ADD UNIQUE KEY uk_customer_task_mid (customer_id, super_task_id, mid),
   ADD KEY idx_customer_task_level_id (customer_id, super_task_id, level, id);
 
--- 当前生产库仅存在 _0 / _1，已于 2026-09-09 执行上述索引变更。
+-- 旧测试环境仅存在 _0 / _1，曾于 2026-09-09 执行上述索引变更。
 -- 后续若创建 nature_ad_super_mid_2 ~ nature_ad_super_mid_19，建表时必须带上相同索引，
 -- 或在投入数据前执行对应 ALTER。
 --
@@ -51,7 +55,7 @@ HAVING COUNT(*) > 1;
 
 -- 若无重复：
 -- ALTER TABLE super_mid_task DROP KEY idx_task_id, ADD UNIQUE KEY uk_task_id (task_id);
--- 当前生产库已于 2026-09-09 执行：idx_task_id → uk_task_id。
+-- 旧测试环境曾于 2026-09-09 执行：idx_task_id → uk_task_id。
 
 -- 四、可选：AI 分类审计表
 -- 配置 audit.mysql_enabled=true 后，worker 会批量写入此表；
@@ -84,7 +88,8 @@ CREATE TABLE IF NOT EXISTS nature_ad_mid_ai_audit (
   KEY idx_record_time (record_id, event_time),
   KEY idx_run (run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='原生内容站 AI 分层运行审计';
--- 当前生产库已于 2026-09-09 创建此表，并在 config.yaml 开启 audit.mysql_enabled。
+-- 旧测试环境曾于 2026-09-09 创建此表。新正式库须先确认表和 INSERT 权限，
+-- 再将 config.yaml 的 audit.mysql_enabled 改为 true。
 
 -- 五、审计表保留策略
 -- 建议由 cron / XXL 每日低峰执行：

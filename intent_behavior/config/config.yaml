@@ -289,12 +289,18 @@ extractor:
 
 # MySQL 分表任务消费配置
 mysql:
-  host: "10.79.104.30"
-  port: 3306
-  user: "clue_collect"
-  password: "clue_collect"
+  # 正式环境（2026-09-14 起）：连接信息仅在本文件维护，请勿写入脚本或 README。
+  host: "s9671i.hebe.grid.sina.com.cn"
+  port: 9671
+  user: "xuanyu11_r"
+  password: "dBotpc9rCXLURwDW"
   database: "clue_collect_common"
   charset: "utf8mb4"
+  # 旧测试环境（保留注释，便于必要时人工切换；不要在正式 worker 中使用）：
+  # host: "10.79.104.30"
+  # port: 3306
+  # user: "clue_collect"
+  # password: "clue_collect"
   task_table: "super_mid_task"
   shard_table_prefix: "nature_ad_super_mid_"
   active_task_type: 1
@@ -325,6 +331,12 @@ logging:
   dir: "logs"
   file_pattern: "classify_{date}.log"
   retention_days: 30
+  # 本地磁盘紧张时可分别关闭文件日志；console_enabled=true 仍保留终端进度。
+  console_enabled: true
+  file_enabled: true
+  # 每日错误文件和反解失败汇总属于补充材料；完整追溯优先查结构化审计。
+  error_file_enabled: true
+  resolve_failure_file_enabled: false
   # 旧 TSV 仅为本地调试兼容。正式溯源以 audit JSONL / MySQL 审计表为准。
   write_legacy_tsv: false
   error_file: "logs/error_records.tsv"
@@ -332,19 +344,28 @@ logging:
 
 # 每次正式执行创建独立、可追溯的 JSONL 审计文件。
 audit:
-  enabled: true
+  # local_enabled 控制 logs/runs 下的 JSONL 与 summary；关闭后不再写本地审计文件。
+  # enabled 是历史兼容字段，请使用 local_enabled。
+  local_enabled: true
   dir: "logs/runs"
   retention_days: 30
   record_model_output: true
   max_model_output_chars: 2000
-  # 已创建审计表；保留结构化审计，便于按 task/mid 查询历史。
-  mysql_enabled: true
+  # 新正式库是否具备 nature_ad_mid_ai_audit 表和 INSERT 权限尚待预检确认。
+  # 确认前保持 false，避免只读账号在每条处理后持续报错。
+  mysql_enabled: false
   mysql_table: "nature_ad_mid_ai_audit"
   # 每条处理结果立即写入审计表。这样 Ctrl+C 中止时，已完成记录不会因等待批量 flush 而丢失。
   mysql_flush_batch_size: 1
   # 由 scripts/cleanup_mysql_audit.py --execute 每日低峰分批清理。
   mysql_retention_days: 90
   mysql_cleanup_batch_size: 10000
+
+# 本地存储保护。低于阈值时自动停止本地日志、JSONL、错误汇总和媒体下载；
+# 控制台输出不受影响。若同时关闭 local audit，请先确认 MySQL 审计可写。
+storage:
+  min_free_mb: 5120
+  low_disk_disable_local_writes: true
 
 # 批处理配置
 batch:

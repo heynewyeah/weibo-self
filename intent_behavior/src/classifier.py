@@ -52,8 +52,16 @@ class BlogClassifier:
         self.failure_label = classification_cfg.get("failure_label", "未识别")
         self.industry_rules = classification_cfg.get("industry_rules", {})
 
-        self.image_handler = ImageHandler(config["media"]["image"], self.logger)
-        self.video_handler = VideoHandler(config["media"]["video"], self.logger)
+        self.image_handler = ImageHandler(
+            config["media"]["image"],
+            self.logger,
+            storage_config=config.get("storage", {}),
+        )
+        self.video_handler = VideoHandler(
+            config["media"]["video"],
+            self.logger,
+            storage_config=config.get("storage", {}),
+        )
 
         self.error_file = config["logging"].get("error_file", "logs/error_records.tsv")
         self.result_file = config["logging"].get("result_file", "output/result.tsv")
