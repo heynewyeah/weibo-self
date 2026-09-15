@@ -367,6 +367,21 @@ storage:
   min_free_mb: 5120
   low_disk_disable_local_writes: true
 
+# 项目运行周报。仅使用 RobotCode 和接收人 userId，不保存应用 AppSecret。
+# 机器人已发布且具备“企业内机器人发消息权限”；实际发送由
+# scripts/send_weekly_report.py 调用当前机器已登录的 dws 完成。
+notifications:
+  dingtalk_weekly_report:
+    enabled: true
+    robot_code: "dingjlymwvcntpnthnal"
+    recipient_user_ids:
+      - "233809"
+    title: "原生内容站项目周报"
+    report_days: 7
+    timezone: "Asia/Shanghai"
+    cron: "0 10 * * 4"
+    # dws 不在 PATH 时，可用环境变量 DWS_RUNNER 覆盖为完整可执行路径。
+
 # 批处理配置
 batch:
   size: 100
