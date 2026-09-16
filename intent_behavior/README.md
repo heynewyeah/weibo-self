@@ -110,7 +110,8 @@ python3 worker.py --config config/config.yaml --once
 | 反解/媒体/模型失败 | JSONL 的 `error_stage`、`error`、耗时 | `logs/runs/YYYYMMDD/` |
 | 旧版本误把中断写成 6 | 先确认审计和人工判断 | `scripts/manual_classify_mid.py --retry-level-6 --write-back` |
 | 回归关键业务保护 | 不连库、不调模型的离线测试 | `python3 -m unittest tests.test_production_guards -v` |
-| 模型连通性 | 模型服务状态 | `python3 check_model_service.py` |
+| 模型连通性 | 模型服务状态（当前为 KServe 网关） | `python3 check_model_service.py` |
+| 模型接口参数回归 | 请求体是否符合网关要求、思考是否关闭 | `python3 -m unittest tests.test_api_client_endpoints -v`（加 `--live` 走真实接口） |
 
 MySQL 审计启用后，可按 `task_id`、`mid`、`record_id`、`run_id` 查询 `nature_ad_mid_ai_audit`。清理审计先预览、后低峰执行：
 
@@ -130,7 +131,7 @@ python3 scripts/generate_weekly_report.py --days 7
 
 报告包括处理量、去重 mid、成功/兜底/失败/中断、闭环率、分类/行业/媒体/转发分布、平均/P50/P95 耗时、失败阶段、按天趋势、审计目录和磁盘健康度。
 
-项目配置已包含钉钉机器人和接收人。先手工验证，再在正式运行机安装每周四 10:00 的 cron：
+项目配置已包含钉钉机器人和接收人。先手工验证，再在正式运行机安装每天 10:00（北京时间，含周末）的 cron：
 
 ```bash
 python3 scripts/send_weekly_report.py --dry-run
@@ -152,7 +153,8 @@ bash scripts/install_weekly_report_cron.sh \
 | 审计维护 | `scripts/cleanup_mysql_audit.py` | 默认预览，`--execute` 才删除 |
 | 本地预演 | `run_classification.py`、`main.py` | `main.py` 是兼容别名，不用于正式回写 |
 | 关键回归测试 | `tests/test_production_guards.py` | 当前正式链路的离线保护测试 |
-| 周报统计 | `scripts/generate_weekly_report.py`、`scripts/send_weekly_report.py`、`scripts/install_weekly_report_cron.sh` | JSONL 周报生成、企业机器人单聊发送和周四定时安装 |
+| 模型接口测试 | `tests/test_api_client_endpoints.py`、`tests/compare_llm_endpoints.py` | 请求体参数单测 / `--live` 真实联调；新旧接口参数矩阵与分类一致性对比 |
+| 周报统计 | `scripts/generate_weekly_report.py`、`scripts/send_weekly_report.py`、`scripts/install_weekly_report_cron.sh` | JSONL 周报生成、企业机器人单聊发送和每天定时安装 |
 | 辅助数据脚本 | `scripts/count_xlsx_mids.py` | Excel 博文映射 mid |
 | SQL 排查工具 | `sql/query_detail-明细表查询.sql`、`sql/query_detail-明细表查询.sh`、`sql/query_task-查询有效任务.sh` | 只读查询任务/分表明细；不部署、不绕过 worker |
 

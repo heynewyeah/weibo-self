@@ -28,9 +28,12 @@ class VLLMClient:
         self.top_p = config.get("top_p", 1.0)
         self.top_k = config.get("top_k", 0)
         self.seed = config.get("seed")
-        self.thinking = config.get("thinking", {"type": "disabled"})
-        self.reasoning = config.get("reasoning", {"effort": "none"})
-        self.enable_thinking = config.get("enable_thinking", False)
+        # 以下参数按需下发：不同网关要求不同（旧直连 vLLM 用 chat_template_kwargs 关思考，
+        # KServe 网关用 thinking 关思考且不接受 reasoning 字典），配置为 null 时不发送
+        self.thinking = config.get("thinking")
+        self.reasoning = config.get("reasoning")
+        self.enable_thinking = config.get("enable_thinking")
+        self.extra_params = config.get("extra_params") or {}
         self.timeout = config.get("timeout", 60)
         self.max_retry = config.get("max_retry", 3)
         self.retry_backoff_base = config.get("retry_backoff_base", 2)
@@ -57,13 +60,19 @@ class VLLMClient:
             "max_tokens": self.max_tokens,
             "top_p": self.top_p,
             "top_k": self.top_k,
-            "thinking": self.thinking,
-            "reasoning": self.reasoning,
         }
         if self.seed is not None:
             payload["seed"] = self.seed
+        if self.thinking is not None:
+            payload["thinking"] = self.thinking
+        if self.reasoning is not None:
+            payload["reasoning"] = self.reasoning
         if self.enable_thinking is not None:
             payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+        # 通过 extra_params 下发网关特有的额外参数（值为 None 时跳过）
+        for key, value in self.extra_params.items():
+            if value is not None:
+                payload[key] = value
         return payload
 
     def _call_api(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

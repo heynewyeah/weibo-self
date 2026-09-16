@@ -55,13 +55,18 @@ def build_payload(api_cfg: dict, system_prompt: str, user_content) -> dict:
         "max_tokens": api_cfg.get("max_tokens", 128),
         "top_p": api_cfg.get("top_p", 1.0),
         "top_k": api_cfg.get("top_k", 0),
-        "thinking": api_cfg.get("thinking", {"type": "disabled"}),
-        "reasoning": api_cfg.get("reasoning", {"effort": "none"}),
     }
     if api_cfg.get("seed") is not None:
         payload["seed"] = api_cfg["seed"]
+    if api_cfg.get("thinking") is not None:
+        payload["thinking"] = api_cfg["thinking"]
+    if api_cfg.get("reasoning") is not None:
+        payload["reasoning"] = api_cfg["reasoning"]
     if api_cfg.get("enable_thinking") is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": api_cfg["enable_thinking"]}
+    for key, value in (api_cfg.get("extra_params") or {}).items():
+        if value is not None:
+            payload[key] = value
     return payload
 
 

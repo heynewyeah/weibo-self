@@ -3,20 +3,27 @@
 # 修改此文件即可调整参数，无需改动代码
 # ============================================
 
-# vLLM API 配置
+# 模型服务配置（api）
+#   当前启用：KServe 网关（llm-beixian），实测可用参数见下方注释
+#   备份方案：旧直连 vLLM（:8087），切换时启用上面两行注释里的 url/model 并放开 reasoning/enable_thinking
 api:
-  url: "http://10.1.126.27:8087/v1/chat/completions"
-  model: "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"
+  url: "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+  # [备份-旧直连 vLLM，切换时启用] url: "http://10.1.126.27:8087/v1/chat/completions"
+  model: "qwen36-35b-a3b-fp8"
+  # [备份-旧直连 vLLM，切换时启用] model: "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"
   max_tokens: 512
   temperature: 0.0
   top_p: 1.0
   top_k: 0
   seed: 42
   thinking:
-    type: "disabled"
-  reasoning:
-    effort: "none"
-  enable_thinking: false
+    type: "disabled"          # 新网关靠该参数关闭思考（实测有效）
+  reasoning: null             # 新网关只接受 int/bool/string，字典会 400
+  enable_thinking: null       # 置空 -> 不下发 chat_template_kwargs（新网关不接受）
+  # [备份-旧直连 vLLM，切换时启用] 旧接口必须靠下面两个参数关思考
+  # reasoning:
+  #   effort: "none"
+  # enable_thinking: false
   timeout: 60
   max_retry: 3
   retry_backoff_base: 2
@@ -378,7 +385,7 @@ notifications:
     title: "原生内容站项目周报"
     report_days: 7
     timezone: "Asia/Shanghai"
-    cron: "0 10 * * 4"
+    cron: "0 10 * * *"
     # dws 不在 PATH 时，可用环境变量 DWS_RUNNER 覆盖为完整可执行路径。
 
 # 批处理配置

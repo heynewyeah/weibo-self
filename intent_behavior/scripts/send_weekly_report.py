@@ -29,8 +29,8 @@
   # 仅生成预览，不实际发送
   python3 scripts/send_weekly_report.py --dry-run
 
-定时执行（每周四 10:00，北京时间）：
-  0 10 * * 4 cd /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior && \
+定时执行（每天 10:00，北京时间，含周末）：
+  0 10 * * * cd /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior && \
     /usr/bin/python3 scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1
 
 说明：
