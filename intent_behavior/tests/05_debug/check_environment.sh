@@ -25,8 +25,13 @@
 set -uo pipefail
 export LC_ALL=C
 
-API_URL="http://10.1.126.27:8087/v1/chat/completions"
-MODEL="/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"
+CONFIG_FILE="$(cd "$(dirname "$0")/../.." && pwd)/config/config.yaml"
+# 从 config.yaml 读取当前模型接口（新网关/旧直连切换后自动生效）
+API_URL=$(python3 -c "import yaml;c=yaml.safe_load(open('${CONFIG_FILE}',encoding='utf-8'));print(c['api']['url'])" 2>/dev/null || true)
+MODEL=$(python3 -c "import yaml;c=yaml.safe_load(open('${CONFIG_FILE}',encoding='utf-8'));print(c['api']['model'])" 2>/dev/null || true)
+if [ -z "${API_URL}" ]; then
+    echo "[WARN] 无法从 ${CONFIG_FILE} 读取 api.url，模型连通性检查将失败；请检查配置"
+fi
 TEST_PID="006mX07Rly8ifv3xs5535j30ud0plk1m"
 TEST_HDFS_DIR="/dw_ext/ad/person/xuanyu11/intent_behavior/data/image_weibo_ad_20260701_20260701"
 
@@ -157,7 +162,7 @@ if [ "${RUN_IMAGE_TEST}" -eq 1 ]; then
                 ],
                 \"max_tokens\": 512,
                 \"temperature\": 0.0,
-                \"chat_template_kwargs\": {\"enable_thinking\": false}
+                \"thinking\": {\"type\": \"disabled\"}
             }" 2>/dev/null)
 
         CLASSIFY_RESULT=$(echo "${TEST_RESP}" | jq -r '.choices[0].message.content // ""')
