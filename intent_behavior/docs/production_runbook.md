@@ -1,6 +1,6 @@
 # 原生内容站 AI 分层生产运行手册
 
-最后更新：2026-09-14
+最后更新：2026-09-16
 
 ## 唯一正式入口
 
@@ -14,7 +14,6 @@ python3 worker.py --config config/config.yaml
 - `run_single_task.py`：单任务联调/排障，默认不回写；需显式传 `--write-back`。
 - `scripts/manual_classify_mid.py`：指定单个 task_id + mid 的人工排障/受控回写脚本；默认不回写。
 - `run_classification.py`：本地文件、单条、只读预演；MySQL 模式禁止回写。
-- `run_e2e_pipeline.py`：历史兼容入口，已弃用，不部署。
 - `tests/`：测试脚本；`scripts/`：运维、自检与数据辅助脚本。
 
 ## 生产处理链路
@@ -30,6 +29,8 @@ super_mid_task.operator_uid（即 customer_id）
   → 超时或 data=0 时只读确认分表最终 level
   → 结构化审计落盘
 ```
+
+当前“有效任务”沿用既有查询条件：`task_type=1 AND (exec_status!=5 OR (exec_status=5 AND end_time > NOW()-1天))`。这不是本次上线临时制定的规则，代码来源是 `src/db_client.py` 的 `fetch_active_tasks()`；请由上游确认 `exec_status=5` 后继续保留 1 天是否符合任务状态语义。
 
 ## 上线前步骤
 
@@ -67,13 +68,66 @@ super_mid_task.operator_uid（即 customer_id）
    python3 worker.py --config config/config.yaml --once
    ```
 
-7. 确认审计、日志和回写结果正常后，启动持续消费：
+7. 确认审计、日志和回写结果正常后，使用 systemd 启动持续消费（推荐）。不要以 `screen` 或保持 SSH 会话作为正式守护方式：
 
    ```bash
-   python3 worker.py --config config/config.yaml
+   sudo systemctl enable --now intent-behavior-worker
    ```
 
    默认每 10 秒查询一轮有效任务和 `level=0` 数据，直到人工按 `Ctrl+C` 停止。
+
+## systemd 正式部署与日常操作
+
+`systemd` 是 Linux 的服务管理器：可随服务器启动、进程异常退出后自动重启，并将标准输出统一收集到 `journalctl`。它是正式不间断运行 worker 的推荐方式。
+
+首次安装需要有 `sudo` / 管理员权限。在正式服务器上创建服务文件：
+
+```bash
+sudo tee /etc/systemd/system/intent-behavior-worker.service >/dev/null <<'EOF'
+[Unit]
+Description=Intent Behavior MySQL Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ads_fst
+Group=ads_fst
+WorkingDirectory=/data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 worker.py --config config/config.yaml
+Restart=always
+RestartSec=10
+TimeoutStopSec=90
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now intent-behavior-worker
+```
+
+若正式环境使用虚拟环境，请把 `ExecStart` 中的 `/usr/bin/python3` 改为该环境的 Python 绝对路径。没有 `sudo` 时，不能写入 `/etc/systemd/system`；请将本节内容交给服务器管理员执行，或确认服务器是否已启用 user-level systemd。
+
+日常命令：
+
+```bash
+# 查看状态（含最近日志）
+sudo systemctl status intent-behavior-worker
+
+# 实时查看日志；Ctrl+C 只退出查看，不停止 worker
+sudo journalctl -u intent-behavior-worker -f
+
+# 更新代码或配置后重启
+sudo systemctl restart intent-behavior-worker
+
+# 临时停止；取消开机自启
+sudo systemctl disable --now intent-behavior-worker
+```
+
+`KillSignal=SIGINT` 会让 worker 按 Ctrl+C 的语义收尾：正在处理的 mid 保持 `level=0`，服务随后会按 `Restart=always` 自动再次启动。若需要真正停止服务，应使用 `systemctl disable --now`，而不是在 journal 查看窗口按 Ctrl+C。
 
 ## 人工中止与指定 mid 复测
 
@@ -109,7 +163,7 @@ super_mid_task.operator_uid（即 customer_id）
 ## 视频与缓存保护
 
 - 视频先尝试抽帧；
-- 抽帧文件超过 200 MB 或时长超过 300 秒，自动降级封面；
+- 视频文件超过 200MB 或时长超过 300 秒，自动降级封面；图片下载不设文件大小上限；
 - frame 与 cover 都不可用时降级文本；
 - 单条完成后删除当次图片、视频和帧；
 - worker 启动时删除超过 24 小时的缓存。
@@ -118,7 +172,7 @@ super_mid_task.operator_uid（即 customer_id）
 
 | 类型 | 路径 | 用途 | 默认保留 |
 | --- | --- | --- | --- |
-| 主运行日志 | `logs/<logger>.log` | 人工查看进度与告警 | 30 天，按天轮转 |
+| 主运行日志 | `logs/mysql_worker.log` | 人工查看进度与告警 | 30 天，按天轮转 |
 | 运行审计 | `logs/runs/YYYYMMDD/<run_id>.jsonl` | 每个 mid 的 task、结果、耗时、错误、模型输出 | 30 天，按天目录清理 |
 | 运行汇总 | `logs/runs/YYYYMMDD/<run_id>_summary.json` | 任务级/运行级汇总 | 30 天 |
 | MySQL 审计 | `nature_ad_mid_ai_audit` | 按 task/mid 查询历史 | 90 天，定时分批清理 |

@@ -113,7 +113,7 @@ class HiveExtractor(BaseExtractor):
     Hive 实时提取器
 
     通过本地 hive 命令执行 SQL，将结果拉取到内存后解析。
-    适用于小批量调试；全量数据建议先用 run_hive.sh 导出到 HDFS/本地。
+    适用于小批量调试；当前正式运行不使用 Hive/HDFS 输入，生产请使用 worker.py 的 MySQL 链路。
     """
 
     def extract(self) -> List[BlogItem]:

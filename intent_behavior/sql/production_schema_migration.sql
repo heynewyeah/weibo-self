@@ -7,40 +7,42 @@
 -- 执行前要求：
 -- 1. 先在预发验证，再在低峰期执行生产；
 -- 2. 先执行下方“重复数据检查”，确认无重复后再加唯一索引；
--- 3. 20 张分表都需要执行相同的索引变更（本文件示例列出 _0 / _1）；
+-- 3. 所有已存在、或当前有效任务会路由到的 0~19 分表都需要执行相同的索引变更；
 -- 4. 由数据库管理员确认在线 DDL 参数与 MySQL 版本。
 --
 -- 本脚本不会由 Python worker 自动执行。
 
--- 一、上线前重复数据检查
--- 若以下任一查询返回记录，先按业务规则清理/合并，再执行 UNIQUE KEY。
-SELECT customer_id, super_task_id, mid, COUNT(*) AS duplicate_count
-FROM nature_ad_super_mid_0
-GROUP BY customer_id, super_task_id, mid
-HAVING COUNT(*) > 1;
+-- 一、20 分表：生成上线前重复数据检查 SQL
+-- 将下面查询结果逐条复制执行。若任一查询返回记录，先按业务规则清理/合并，
+-- 再执行 UNIQUE KEY。该写法会覆盖当前库所有实际存在的 _0 ~ _19 分表。
+SELECT CONCAT(
+  'SELECT customer_id, super_task_id, mid, COUNT(*) AS duplicate_count FROM `',
+  table_name,
+  '` GROUP BY customer_id, super_task_id, mid HAVING COUNT(*) > 1;'
+) AS duplicate_check_sql
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_name REGEXP '^nature_ad_super_mid_([0-9]|1[0-9])$'
+ORDER BY table_name;
 
-SELECT customer_id, super_task_id, mid, COUNT(*) AS duplicate_count
-FROM nature_ad_super_mid_1
-GROUP BY customer_id, super_task_id, mid
-HAVING COUNT(*) > 1;
-
--- 二、分表：防止同一任务重复写入同一 mid
--- 以及加速 worker 的：
--- WHERE customer_id=? AND super_task_id=? AND level=0 ORDER BY id LIMIT ?
+-- 二、20 分表：生成索引 DDL（先由 DBA 审核，再逐条执行）
+-- 目的：
+-- 1) uk_customer_task_mid 防止同一任务重复写入同一 mid；
+-- 2) idx_customer_task_level_id 加速 worker 查询：
+--    WHERE customer_id=? AND super_task_id=? AND level=0 ORDER BY id LIMIT ?
 --
--- 对 nature_ad_super_mid_0：
-ALTER TABLE nature_ad_super_mid_0
-  ADD UNIQUE KEY uk_customer_task_mid (customer_id, super_task_id, mid),
-  ADD KEY idx_customer_task_level_id (customer_id, super_task_id, level, id);
+-- 对已存在同名索引的分表，请跳过对应 ALTER；不要在生产库直接批量自动执行。
+SELECT CONCAT(
+  'ALTER TABLE `', table_name,
+  '` ADD UNIQUE KEY uk_customer_task_mid (customer_id, super_task_id, mid), ',
+  'ADD KEY idx_customer_task_level_id (customer_id, super_task_id, level, id);'
+) AS shard_index_ddl
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_name REGEXP '^nature_ad_super_mid_([0-9]|1[0-9])$'
+ORDER BY table_name;
 
--- 对 nature_ad_super_mid_1：
-ALTER TABLE nature_ad_super_mid_1
-  ADD UNIQUE KEY uk_customer_task_mid (customer_id, super_task_id, mid),
-  ADD KEY idx_customer_task_level_id (customer_id, super_task_id, level, id);
-
--- 旧测试环境仅存在 _0 / _1，曾于 2026-09-09 执行上述索引变更。
--- 后续若创建 nature_ad_super_mid_2 ~ nature_ad_super_mid_19，建表时必须带上相同索引，
--- 或在投入数据前执行对应 ALTER。
+-- 新增分表时必须同步带上以上两个索引，或在投入数据前执行相应 ALTER。
 --
 -- 三、任务扫描索引
 -- worker 按 task_type / exec_status / end_time 扫描有效任务。

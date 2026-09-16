@@ -329,7 +329,6 @@ worker:
 logging:
   level: "INFO"
   dir: "logs"
-  file_pattern: "classify_{date}.log"
   retention_days: 30
   # 本地磁盘紧张时可分别关闭文件日志；console_enabled=true 仍保留终端进度。
   console_enabled: true

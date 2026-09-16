@@ -23,8 +23,6 @@ python3 worker.py --config config/config.yaml
 | `generate_weekly_report.py` | 从 JSONL 运行审计生成只读周报（成功/失败/耗时/趋势/存储） | `python3 scripts/generate_weekly_report.py --days 7` |
 | `send_weekly_report.py` | 通过已发布的企业机器人向个人单聊发送周报 | `python3 scripts/send_weekly_report.py` |
 | `install_weekly_report_cron.sh` | 安装/更新每周四 10:00 的周报 cron | `bash scripts/install_weekly_report_cron.sh` |
-| `batch_classify_3layer.sh` | 历史 Hive 批量分类辅助脚本；不用于 MySQL 正式回写 | 见脚本文件头 |
-| `run_hive.sh` | 历史 Hive 数据准备辅助脚本；不用于 MySQL 正式回写 | 见脚本文件头 |
 
 ## 钉钉企业机器人周报
 

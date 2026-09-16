@@ -21,7 +21,7 @@
 
 检查内容：
 1. 配置是否把 super_mid_task.operator_uid 用作 customer_id 路由；
-2. 分表是否存在、待处理查询是否具备推荐组合索引；
+2. 所有实际存在的 0~19 分表是否具备推荐组合索引，并确认活跃任务路由分表存在；
 3. 是否存在 (customer_id, super_task_id, mid) 重复数据；
 4. task_id 是否重复；
 5. 可选审计表是否存在，且当前账号具备 INSERT 权限（audit.mysql_enabled=true 时必检）。
@@ -42,8 +42,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
-from typing import Dict, List
+from typing import Dict, List, Set
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_DIR)
@@ -51,7 +52,6 @@ sys.path.insert(0, PROJECT_DIR)
 import yaml
 
 from src.db_client import MySQLTaskRepository
-
 
 def get_indexes(conn, table: str) -> Dict[str, List[str]]:
     with conn.cursor() as cur:
@@ -83,6 +83,61 @@ def has_privilege(conn, schema: str, table: str, privilege: str) -> bool:
         return cur.fetchone() is not None
 
 
+def fetch_shard_tables(conn, schema: str, prefix: str) -> Dict[int, str]:
+    """返回当前库实际存在的合法 0~19 分表，表名仅来自 information_schema。"""
+    shard_table_re = re.compile(rf"^{re.escape(prefix)}([0-9]|1[0-9])$")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s
+              AND table_name LIKE %s
+            """,
+            (schema, f"{prefix}%"),
+        )
+        rows = cur.fetchall() or []
+
+    shards = {}
+    for row in rows:
+        table_name = str(row["table_name"])
+        match = shard_table_re.fullmatch(table_name)
+        if match:
+            shards[int(match.group(1))] = table_name
+    return shards
+
+
+def fetch_active_task_shards(conn, mysql_cfg: Dict[str, object]) -> Set[int]:
+    """读取全部当前有效任务实际会路由到的分表编号，不受 worker 单轮 limit 影响。"""
+    task_table = str(mysql_cfg["task_table"])
+    customer_field = str(mysql_cfg["task_customer_id_field"])
+    task_type = int(mysql_cfg.get("active_task_type", 1))
+    inactive_status = int(mysql_cfg.get("inactive_exec_status", 5))
+    end_time_field = str(mysql_cfg.get("task_end_time_field", "end_time"))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT MOD({customer_field}, 20) AS shard_index
+            FROM {task_table}
+            WHERE task_type = %s
+              AND (
+                exec_status != %s
+                OR (
+                  exec_status = %s
+                  AND {end_time_field} > DATE_SUB(NOW(), INTERVAL 1 DAY)
+                )
+              )
+            """,
+            (task_type, inactive_status, inactive_status),
+        )
+        return {
+            int(row["shard_index"])
+            for row in (cur.fetchall() or [])
+            if row.get("shard_index") is not None
+        }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="原生内容站 AI 分层生产前只读自检")
     parser.add_argument("--config", default=os.path.join(PROJECT_DIR, "config/config.yaml"))
@@ -107,14 +162,38 @@ def main() -> None:
     repo = MySQLTaskRepository(mysql_cfg, app_config=config)
     try:
         with repo.connect() as conn:
-            tables = ["super_mid_task", "nature_ad_super_mid_0", "nature_ad_super_mid_1"]
-            for table in tables:
+            task_table = str(mysql_cfg.get("task_table", "super_mid_task"))
+            shard_prefix = str(mysql_cfg.get("shard_table_prefix", "nature_ad_super_mid_"))
+            schema = str(mysql_cfg["database"])
+
+            for table in (task_table,):
                 if not repo.table_exists(conn, table):
                     failures.append(f"缺少表: {table}")
 
-            for table in ("nature_ad_super_mid_0", "nature_ad_super_mid_1"):
-                if not repo.table_exists(conn, table):
-                    continue
+            shard_tables = fetch_shard_tables(conn, schema, shard_prefix)
+            if not shard_tables:
+                failures.append(f"未发现任何合法分表: {shard_prefix}0 ~ {shard_prefix}19")
+
+            active_task_shards = (
+                fetch_active_task_shards(conn, mysql_cfg)
+                if not failures
+                else set()
+            )
+            missing_active_shards = sorted(active_task_shards - set(shard_tables))
+            if missing_active_shards:
+                failures.append(
+                    "当前有效任务会路由到不存在的分表: "
+                    + ", ".join(f"{shard_prefix}{index}" for index in missing_active_shards)
+                )
+
+            missing_shards = sorted(set(range(20)) - set(shard_tables))
+            if missing_shards:
+                warnings.append(
+                    "未创建的分表（当前无有效任务路由到这些表时不阻断）："
+                    + ", ".join(f"{shard_prefix}{index}" for index in missing_shards)
+                )
+
+            for shard_index, table in sorted(shard_tables.items()):
                 indexes = get_indexes(conn, table)
                 recommended = ["customer_id", "super_task_id", "level", "id"]
                 if recommended not in indexes.values():
@@ -138,16 +217,16 @@ def main() -> None:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) AS c
                     FROM (
-                        SELECT task_id FROM super_mid_task GROUP BY task_id HAVING COUNT(*) > 1
+                        SELECT task_id FROM {task_table} GROUP BY task_id HAVING COUNT(*) > 1
                     ) AS duplicated
                     """
                 )
                 task_dups = int((cur.fetchone() or {}).get("c") or 0)
             if task_dups:
-                failures.append(f"super_mid_task 存在 {task_dups} 个重复 task_id")
+                failures.append(f"{task_table} 存在 {task_dups} 个重复 task_id")
 
             audit_cfg = config.get("audit", {})
             if audit_cfg.get("mysql_enabled"):
@@ -164,6 +243,24 @@ def main() -> None:
 
     print("原生内容站 AI 分层生产前自检")
     print(f"路由字段: {mysql_cfg.get('task_customer_id_field')}")
+    print(
+        "已检查分表: "
+        + (
+            ", ".join(
+                table for _, table in sorted(shard_tables.items())
+            )
+            if shard_tables
+            else "无"
+        )
+    )
+    print(
+        "当前有效任务路由分表: "
+        + (
+            ", ".join(f"{shard_prefix}{index}" for index in sorted(active_task_shards))
+            if active_task_shards
+            else "无"
+        )
+    )
     for item in warnings:
         print(f"[WARN] {item}")
     for item in failures:

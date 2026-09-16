@@ -1,6 +1,6 @@
 # 原生内容站 AI 意图分层
 
-> 最后更新：2026-09-14
+> 最后更新：2026-09-16
 > 正式持续入口：`python3 worker.py --config config/config.yaml`
 
 本项目消费原生内容站 MySQL 任务和待处理博文，完成 mid 反解、转发处理、媒体理解、AI 分层，并通过 HTTP 接口回写 level。
@@ -22,7 +22,9 @@
 | 品牌上下文 | 分表 `hit_mid_tag` + 任务 `brand_tag` JSON | 命中 tag 时精确解析品牌；没有命中时回退任务全部品牌词 |
 | 博文真实内容/媒体 | mid 反解接口 | 获取正文、pid、fid、uid 等，不依赖分表中的历史正文 |
 
-历史 Hive/HDFS 输入配置和 `scripts/run_hive.sh` 仅用于早期数据准备/离线实验，不属于当前 MySQL 正式链路。
+`data_extractor.py` 中仍保留早期 Hive/HDFS 预演能力，但它不属于当前 MySQL 正式链路，也不能用于生产回写。
+
+“有效任务”是项目原有 MySQL 查询规则，不是本次上线新增的业务规则：`task_type=1`，且 `exec_status!=5`；若 `exec_status=5`，则 `end_time` 在最近 1 天内也会暂时继续被扫描。该规则实现在 `src/db_client.py` 的 `fetch_active_tasks()`；是否要保留“完成后 1 天”的窗口，应由上游任务状态定义确认。
 
 ## 3. 正式处理链路
 
@@ -35,7 +37,7 @@ super_mid_task.operator_uid
   → 转发审查
       ├─ 原博正文缺失 / 明确异常：level=6（其他）
       └─ 正常：转发正文 + 原博正文综合分类
-  → 图片下载 / 视频抽帧（>300 秒或 >200MB 降级封面；仍失败降级文本）
+  → 图片下载 / 视频抽帧（视频超过 300 秒或 200MB 降级封面；仍失败降级文本）
   → AI 分类为 level=1/2/3/6
   → HTTP update-level 回写（服务端只更新 level=0）
   → 超时或 data=0 时只读查询分表确认最终 level
@@ -90,8 +92,8 @@ python3 scripts/production_preflight.py --strict
 # 只执行一轮，观察终端、审计和回写
 python3 worker.py --config config/config.yaml --once
 
-# 确认无误后持续运行；Ctrl+C 停止
-python3 worker.py --config config/config.yaml
+# 确认无误后，以 systemd 持续运行（推荐）
+# 具体安装、启停、看日志方法见 docs/production_runbook.md
 ```
 
 默认 worker 行为：持续查询有效任务 → 处理 `level=0` → 回写 → 等待 10 秒 → 下一轮。`--once` 只运行一轮后退出。
@@ -152,6 +154,6 @@ bash scripts/install_weekly_report_cron.sh \
 | 关键回归测试 | `tests/test_production_guards.py` | 当前正式链路的离线保护测试 |
 | 周报统计 | `scripts/generate_weekly_report.py`、`scripts/send_weekly_report.py`、`scripts/install_weekly_report_cron.sh` | JSONL 周报生成、企业机器人单聊发送和周四定时安装 |
 | 辅助数据脚本 | `scripts/count_xlsx_mids.py` | Excel 博文映射 mid |
-| 历史/弃用 | `run_e2e_pipeline.py`、`scripts/run_hive.sh`、`scripts/batch_classify_3layer.sh`、`sql/query_*.sh`（除查明细 SQL） | 不部署、不绕过 worker；仅保留历史数据准备或人工参考 |
+| SQL 排查工具 | `sql/query_detail-明细表查询.sql`、`sql/query_detail-明细表查询.sh`、`sql/query_task-查询有效任务.sh` | 只读查询任务/分表明细；不部署、不绕过 worker |
 
 `sql/production_schema_migration.sql` 是新库建表/索引的迁移模板，不会被 Python 自动执行；正式库是否需要执行必须由具备 DDL 权限的 DBA 根据预检结果确认。

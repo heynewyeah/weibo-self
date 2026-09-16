@@ -1,0 +1,9 @@
+.DS_Store
+**/.DS_Store
+
+# 运行时日志与本地审计；生产排查保留在服务器，不提交代码仓库。
+intent_behavior/logs/
+
+# 本地媒体缓存与兼容调试结果。
+intent_behavior/output/.cache/
+intent_behavior/output/result.tsv
