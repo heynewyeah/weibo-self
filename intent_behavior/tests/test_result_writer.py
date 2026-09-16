@@ -12,7 +12,7 @@
   python3 tests/test_result_writer.py --mid 5333296278144730 --customer-id 2608812381 --task-id 1301222511089811457 --level 6
 
   # 自定义 URL
-  python3 tests/test_result_writer.py --url http://10.133.6.162:8058/api/v1/super-mid/update-level
+  python3 tests/test_result_writer.py --url http://terra.biz.weibo.com/api/v1/super-mid/update-level
 
   # 增加超时时间
   python3 tests/test_result_writer.py --timeout 60
