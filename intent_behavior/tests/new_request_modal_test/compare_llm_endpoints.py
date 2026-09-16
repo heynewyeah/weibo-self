@@ -19,11 +19,11 @@
   E. 结论：给出“是否可直接平移 / 需要调整什么参数”的判定。
 
 运行方式：
-  python3 tests/compare_llm_endpoints.py
-  python3 tests/compare_llm_endpoints.py --samples 10 --industry 汽车
-  python3 tests/compare_llm_endpoints.py --image /path/to/test.jpg     使用真实图片做多模态测试
-  python3 tests/compare_llm_endpoints.py --skip-db                     只做接口层测试
-  python3 tests/compare_llm_endpoints.py --new-url http://... --new-model ...
+  python3 tests/new_request_modal_test/compare_llm_endpoints.py
+  python3 tests/new_request_modal_test/compare_llm_endpoints.py --samples 10 --industry 汽车
+  python3 tests/new_request_modal_test/compare_llm_endpoints.py --image /path/to/test.jpg     使用真实图片做多模态测试
+  python3 tests/new_request_modal_test/compare_llm_endpoints.py --skip-db                     只做接口层测试
+  python3 tests/new_request_modal_test/compare_llm_endpoints.py --new-url http://... --new-model ...
 
 作者：xuanyu11
 """
@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 sys.path.insert(0, PROJECT_DIR)
 
 import requests
@@ -163,10 +163,13 @@ def build_payload_style(style: str, model: str, system_prompt: str, user_content
     if api_cfg.get("seed") is not None:
         payload["seed"] = api_cfg["seed"]
     if style == "legacy":
-        payload["thinking"] = api_cfg.get("thinking", {"type": "disabled"})
-        payload["reasoning"] = api_cfg.get("reasoning", {"effort": "none"})
+        # 旧直连 vLLM 必须靠 reasoning + chat_template_kwargs 关思考；
+        # 即使当前 config 已切到网关（这两项为 null），测试时也要兜底成旧接口需要的值
+        payload["thinking"] = api_cfg.get("thinking") or {"type": "disabled"}
+        payload["reasoning"] = api_cfg.get("reasoning") or {"effort": "none"}
+        enable_thinking = api_cfg.get("enable_thinking")
         payload["chat_template_kwargs"] = {
-            "enable_thinking": api_cfg.get("enable_thinking", False)
+            "enable_thinking": False if enable_thinking is None else enable_thinking
         }
     else:
         payload["thinking"] = {"type": "disabled"}
@@ -354,6 +357,7 @@ def load_samples(config: Dict[str, Any], task_id: int, limit: int) -> List[Dict[
                 "industry": rec.task_industry_name or "",
                 "brand_terms": "、".join(rec.task_brand_values) if rec.task_brand_values else "无",
                 "hit_brand": rec.hit_brand_name or "",
+                "author_name": rec.mid_uid_name or "",
             })
             if len(samples) >= limit:
                 break
@@ -374,10 +378,13 @@ def run_consistency(config: Dict[str, Any], old_url: str, old_model: str,
         ind = s["industry"] or industry
         brand_terms = s["hit_brand"] or s["brand_terms"] or "无"
         try:
-            user_prompt = user_tpl.format(industry=ind, brand_terms=brand_terms, content=s["content"])
+            user_prompt = user_tpl.format(industry=ind, brand_terms=brand_terms,
+                                          author_name=s.get("author_name") or "未知",
+                                          content=s["content"])
         except Exception:
             user_prompt = (user_tpl.replace("{industry}", ind)
                            .replace("{brand_terms}", brand_terms)
+                           .replace("{author_name}", s.get("author_name") or "未知")
                            .replace("{content}", s["content"]))
 
         row = {"mid": s["mid"], "content_preview": s["content"][:30]}
@@ -412,6 +419,13 @@ def fetch_model_meta(url: str, timeout: int) -> Dict[str, Any]:
     except Exception as exc:
         return {"url": meta_url, "status": None, "meta": None,
                 "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def parse_backup_endpoint(raw_text: str) -> Tuple[str, str]:
+    """从 config.yaml 注释里解析旧直连 vLLM 的 url/model（备份方案）。"""
+    m_url = re.search(r'#.*备份.*url: "([^"]+)"', raw_text)
+    m_model = re.search(r'#.*备份.*model: "([^"]+)"', raw_text)
+    return (m_url.group(1) if m_url else ""), (m_model.group(1) if m_model else "")
 
 
 def run_forward_review(config: Dict[str, Any], old_url: str, old_model: str,
@@ -469,11 +483,13 @@ def main():
 
     config_path = args.config if os.path.isabs(args.config) else os.path.join(PROJECT_DIR, args.config)
     with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        raw_config_text = f.read()
+    config = yaml.safe_load(raw_config_text)
     api_cfg = config["api"]
 
-    old_url = args.old_url or api_cfg["url"]
-    old_model = args.old_model or api_cfg["model"]
+    backup_url, backup_model = parse_backup_endpoint(raw_config_text)
+    old_url = args.old_url or backup_url or api_cfg["url"]
+    old_model = args.old_model or backup_model or api_cfg["model"]
     new_model = args.new_model or api_cfg["model"]
     timeout = args.timeout or api_cfg.get("timeout", 60)
 
@@ -489,6 +505,10 @@ def main():
     print("=" * 90)
     for n, u, m, s in endpoints:
         print(f"[{n}] {u}\n      model={m}  style={s}")
+    if not args.old_url and backup_url:
+        print("[说明] 旧接口取的是 config.yaml 中注释保留的备份地址（旧直连 vLLM）")
+    elif not args.old_url and not backup_url:
+        print("[说明] 未在 config.yaml 找到备份地址，旧接口沿用 config.api.url")
     print(f"超时: {timeout}s  分类对比样本: {'跳过' if args.skip_db or args.samples <= 0 else args.samples} 条")
 
     print("\n" + "-" * 90)

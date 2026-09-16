@@ -16,9 +16,9 @@
      - （可选 --check-legacy）配置里注释掉的旧直连地址仍然可用
 
 运行方式：
-  python3 -m unittest tests.test_api_client_endpoints -v      # 只跑离线单测
-  python3 tests/test_api_client_endpoints.py --live            # 离线单测 + 真实接口联调
-  python3 tests/test_api_client_endpoints.py --live --check-legacy
+  python3 -m unittest tests.new_request_modal_test.test_api_client_endpoints -v      # 只跑离线单测
+  python3 tests/new_request_modal_test/test_api_client_endpoints.py --live            # 离线单测 + 真实接口联调
+  python3 tests/new_request_modal_test/test_api_client_endpoints.py --live --check-legacy
 
 作者：xuanyu11
 """
@@ -36,7 +36,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, PROJECT_DIR)
 
 import yaml
