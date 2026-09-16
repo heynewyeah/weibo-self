@@ -159,3 +159,29 @@ bash scripts/install_weekly_report_cron.sh \
 | SQL 排查工具 | `sql/query_detail-明细表查询.sql`、`sql/query_detail-明细表查询.sh`、`sql/query_task-查询有效任务.sh` | 只读查询任务/分表明细；不部署、不绕过 worker |
 
 `sql/production_schema_migration.sql` 是新库建表/索引的迁移模板，不会被 Python 自动执行；正式库是否需要执行必须由具备 DDL 权限的 DBA 根据预检结果确认。
+
+## 9. 模型服务与接口参数
+
+当前启用的模型服务（2026-09 起切换到 llm-beixian 网关注入）：
+
+| 项 | 值 |
+| --- | --- |
+| 接口地址 | `config/config.yaml` 的 `api.url`：`http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions` |
+| 协议 | KServe v2（`.../v2/models/llm` 提供模型元信息，chat 走末尾 `/chat/completions`） |
+| 服务端模型名 | `qwen36-35b-a3b-fp8`（请求体里的 `model` 字段会被网关覆盖，填旧路径也能用） |
+| 关闭思考 | `thinking: {type: "disabled"}`（顶层 `enable_thinking: false` 也可） |
+| 网关不支持 | `reasoning` 字典、`chat_template_kwargs` 字典（返回 400，只接受 int/bool/string） |
+| 多模态 | 支持 `image_url`（图文、视频抽帧与旧接口相同链路） |
+| 备份方案 | 旧直连 vLLM（`:8087`）的 url/model 已在 `config.yaml` 注释保留；切换时同时放开 `reasoning: {effort: "none"}` 和 `enable_thinking: false` |
+
+[src/api_client.py](src/api_client.py) 按“配置为 `null` 就不下发该参数”的方式组织请求体，因此两套网关可以共存配置、按需切换，不需要改代码。若网关新增参数，可用 `api.extra_params` 透传（值为 `null` 时跳过）。
+
+模型接口回归：
+
+```bash
+python3 -m unittest tests.test_api_client_endpoints -v          # 离线：请求体参数构造（不联网）
+python3 tests/test_api_client_endpoints.py --live               # 真实接口：连通性 + 关思考 + 多模态
+python3 tests/test_api_client_endpoints.py --live --check-legacy  # 顺带验证备份的旧直连地址
+python3 tests/compare_llm_endpoints.py --samples 10             # 新旧接口参数矩阵 + 模型信息 + 分类/转发一致性
+python3 check_model_service.py                                  # 单次连通性 ping
+```
