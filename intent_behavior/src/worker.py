@@ -18,8 +18,11 @@ MySQL 分表持续消费 worker。
 
 from __future__ import annotations
 
+import os
+import sys
 import logging
 import time
+from datetime import date
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -49,6 +52,30 @@ class MySQLShardWorker:
         self.repo = MySQLTaskRepository(self.mysql_cfg, self.logger, app_config=config)
         self.pipeline = ClassifyPipeline(config, self.logger)
         self.stats = WorkerStats()
+
+    def _acquire_instance_lock(self):
+        """可选：同机单实例互斥（避免误启两份长期运行进程）。"""
+        if not bool(self.worker_cfg.get("single_instance", False)):
+            return None
+        project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        lock_path = self.worker_cfg.get("lock_file", "logs/worker.lock")
+        if not os.path.isabs(lock_path):
+            lock_path = os.path.join(project_dir, lock_path)
+        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+        try:
+            import fcntl
+        except ImportError:
+            self.logger.warning("当前平台不支持 flock，跳过单实例锁")
+            return None
+        lock_fd = open(lock_path, "a+")
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.logger.error("检测到另一个 worker 实例正在运行（锁文件 %s），本进程退出", lock_path)
+            lock_fd.close()
+            sys.exit(1)
+        self.logger.info("已获取单实例锁: %s", lock_path)
+        return lock_fd
 
     def run_once(self) -> Dict[str, Any]:
         self.stats.loops += 1
@@ -106,18 +133,31 @@ class MySQLShardWorker:
     def run_forever(self) -> None:
         poll_interval = float(self.worker_cfg.get("poll_interval_sec", 10))
         max_loops = int(self.worker_cfg.get("max_loops", 0))
+        daily_reset = bool(self.worker_cfg.get("daily_reset", True))
+        day_started = date.today()
 
         self.logger.info("MySQL 分表 worker 启动")
         self.logger.info(
-            "配置: poll_interval=%ss fetch_limit_per_task=%s active_task_limit=%s",
+            "配置: poll_interval=%ss fetch_limit_per_task=%s active_task_limit=%s "
+            "daily_reset=%s single_instance=%s",
             poll_interval,
             self.worker_cfg.get("fetch_limit_per_task", 100),
             self.worker_cfg.get("active_task_limit", 50),
+            daily_reset,
+            bool(self.worker_cfg.get("single_instance", False)),
         )
 
+        lock_fd = self._acquire_instance_lock()
         loop_idx = 0
         try:
             while True:
+                if daily_reset:
+                    today = date.today()
+                    if today != day_started:
+                        day_started = today
+                        loop_idx = 0
+                        self.stats.loops = 0
+                        self.logger.info("进入新的一天（%s），轮询计数已重置", today)
                 loop_idx += 1
                 try:
                     self.run_once()
@@ -135,6 +175,8 @@ class MySQLShardWorker:
         finally:
             # 即使其他入口直接调用 run_forever，也要落运行汇总。
             self.pipeline.audit.finalize({"mode": "forever", "loops": loop_idx})
+            if lock_fd is not None:
+                lock_fd.close()
 
     def _process_task(self, task: TaskRecord, batch_limit: int,
                       task_idx: int, total_tasks: int) -> Dict[str, int]:

@@ -331,6 +331,12 @@ worker:
   max_loops: 0
   # MySQL 命名锁：多个 worker 时防止同一记录被重复送模型。
   record_lock_timeout_sec: 0
+  # 每天午夜自动把轮询计数归零（只影响日志显示，不影响处理）。
+  daily_reset: true
+  # 同机单实例互斥：true 时第二个进程启动会因拿不到文件锁立即退出。
+  # 注意：若要在同一台机器上故意跑多个 worker 做水平扩展，请保持 false。
+  single_instance: false
+  lock_file: "logs/worker.lock"
 
 # 日志配置
 logging:
