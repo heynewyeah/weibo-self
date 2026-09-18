@@ -114,7 +114,8 @@ class VLLMClient:
         self.logger.error(f"API调用失败，已达最大重试次数({self.max_retry})")
         return None
 
-    def classify_text(self, system_prompt: str, user_prompt: str) -> Optional[str]:
+    def classify_text(self, system_prompt: str, user_prompt: str,
+                      max_tokens: Optional[int] = None) -> Optional[str]:
         """
         纯文本分类
 
@@ -126,6 +127,8 @@ class VLLMClient:
             模型输出文本，失败返回 None
         """
         payload = self._build_payload(system_prompt, user_prompt)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         data = self._call_api(payload)
         if data is None:
             return None

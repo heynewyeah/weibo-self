@@ -479,7 +479,9 @@ class MySQLTaskRepository:
                 "result_writer 未配置，无法回写结果。请在 config.yaml 中配置 result_writer.url"
             )
 
-        level = self.get_level_code(record.task_industry_name or result.industry_name, result.layer)
+        # 优先使用分类阶段细化后的行业（如 美食 -> 奶茶），再回退到任务粗行业。
+        industry = result.industry_name or record.task_industry_name
+        level = self.get_level_code(industry, result.layer)
         try:
             response = self.writer.update_level(
                 customer_id=record.customer_id,

@@ -37,6 +37,12 @@ classification:
   pending_level: 0
   other_label: "其他"
   failure_label: "未识别"
+  # 粗行业 -> 细行业 的轻量二分类：命中粗行业时，用一次短推理判断是否属于目标细行业。
+  infer_refine_map:
+    美食: 奶茶
+  industry_refine_max_tokens: 16
+  industry_refine_yes_tokens: ["是", "yes", "y", "1"]
+  industry_refine_no_tokens: ["否", "不是", "no", "n", "0"]
   industry_rules:
     汽车:
       layers:
@@ -241,6 +247,20 @@ prompts:
     输出要求（不要输出解释）：
     - 如果存在上述异常情况，输出：转发判定：【异常】
     - 如果不存在上述异常情况，输出：转发判定：【正常】
+
+  industry_refine_prompt: |
+    请判断下面这条博文是否属于「{target_industry}」行业。
+
+    判断依据：内容是否围绕{target_industry}品牌、产品、口味、门店、代言人活动、上新测评、
+    购买体验、行业动态等展开。如果只是顺带提到相关字眼、但主体并非{target_industry}，
+    请判「否」。
+
+    品牌词：{brand_terms}
+
+    博文内容：
+    {content}
+
+    请只输出一个词：是 或 否
 
 # 图片媒体配置
 media:

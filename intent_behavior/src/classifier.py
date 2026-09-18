@@ -51,6 +51,14 @@ class BlogClassifier:
         self.other_label = classification_cfg.get("other_label", "其他")
         self.failure_label = classification_cfg.get("failure_label", "未识别")
         self.industry_rules = classification_cfg.get("industry_rules", {})
+        # 粗行业 -> 细行业 的轻量二分类映射（如 美食 -> 奶茶）
+        self.infer_refine_map = classification_cfg.get("infer_refine_map", {})
+        self.industry_refine_max_tokens = int(classification_cfg.get("industry_refine_max_tokens", 16))
+        self.industry_refine_yes_tokens = classification_cfg.get(
+            "industry_refine_yes_tokens", ["是", "yes", "y", "1"])
+        self.industry_refine_no_tokens = classification_cfg.get(
+            "industry_refine_no_tokens", ["否", "不是", "no", "n", "0"])
+        self.industry_refine_prompt = self.prompts.get("industry_refine_prompt", "")
 
         self.image_handler = ImageHandler(
             config["media"]["image"],
@@ -81,6 +89,50 @@ class BlogClassifier:
     def _is_supported_industry(self, industry_name: str) -> bool:
         """判断行业是否在支持列表中"""
         return industry_name in self.supported_industries
+
+    def _parse_yes_no(self, raw: str) -> Optional[bool]:
+        """解析二分类结果：True=是 / False=否 / None=无法解析。"""
+        text = re.sub(r"[^\w\u4e00-\u9fff]", "", (raw or "")).strip().lower()
+        if not text:
+            return None
+        for token in self.industry_refine_no_tokens:
+            if text.startswith(str(token).lower()):
+                return False
+        for token in self.industry_refine_yes_tokens:
+            if text.startswith(str(token).lower()):
+                return True
+        return None
+
+    def _maybe_refine_industry(self, item: BlogItem, source_industry: str) -> tuple:
+        """
+        对粗行业做一次轻量二分类，细化为具体行业（如 美食 -> 奶茶）。
+
+        返回 (target_industry 或 None, 说明文案)。仅当粗行业在 infer_refine_map 中
+        且模型判定为“是”时才返回目标行业；判定为“否”、调用失败或输出无法解析时
+        返回 None，调用方应归为“其他”。
+        """
+        target = self.infer_refine_map.get(source_industry)
+        if not target:
+            return None, f"行业不支持: {source_industry or '空'}"
+        if not self.industry_refine_prompt:
+            return None, f"行业细化未配置提示词，归为其他: {source_industry}"
+
+        prompt = self.industry_refine_prompt.format(
+            industry=source_industry,
+            target_industry=target,
+            brand_terms=self._format_brand_terms(item),
+            content=item.content or "",
+        )
+        raw = self.api_client.classify_text(
+            "你是行业二分类判断器。", prompt, max_tokens=self.industry_refine_max_tokens)
+        if raw is None:
+            return None, f"行业细化判定调用失败，归为其他: {source_industry}"
+        decision = self._parse_yes_no(raw)
+        if decision is True:
+            return target, f"行业细化判定: 属于{target}"
+        if decision is False:
+            return None, f"行业细化判定: 不属于{target}"
+        return None, f"行业细化判定输出无法解析({raw[:40]})，归为其他"
 
     def _get_industry_rule(self, industry_name: str) -> Dict[str, Any]:
         return self.industry_rules.get(industry_name, self.industry_rules.get(self.default_industry, {}))
@@ -250,24 +302,32 @@ class BlogClassifier:
         media_type = self.detect_media_type(item)
         industry_name = self._resolve_industry(item)
 
-        # 行业不支持时（非汽车/奶茶/空），直接返回"其他"作为有效业务结果（level=6）
+        # 行业不支持时，先尝试粗行业 -> 细行业的轻量二分类（如 美食 -> 奶茶）
         if not self._is_supported_industry(industry_name):
-            self.logger.info(
-                f"行业不支持，归为其他 mid={item.mid} industry={industry_name or '空'}"
-            )
-            return ClassifyResult(
-                mid=item.mid,
-                uid=item.uid,
-                layer=self.other_label,
-                media_type=media_type,
-                success=True,
-                error="",
-                model_output=f"行业不支持: {industry_name or '空'}，归为其他(level=6)",
-                industry_name=industry_name or "",
-                is_forward=item.has_forward(),
-                forward_mid=item.forward_mid,
-                forward_status="not_forward",
-            )
+            refined, refine_note = self._maybe_refine_industry(item, industry_name)
+            if refined:
+                self.logger.info(
+                    "行业细化: %s -> %s mid=%s", industry_name, refined, item.mid)
+                industry_name = refined
+                item.industry_name = refined
+            else:
+                self.logger.info(
+                    "行业不支持，归为其他 mid=%s industry=%s note=%s",
+                    item.mid, industry_name or '空', refine_note,
+                )
+                return ClassifyResult(
+                    mid=item.mid,
+                    uid=item.uid,
+                    layer=self.other_label,
+                    media_type=media_type,
+                    success=True,
+                    error="",
+                    model_output=refine_note + "，归为其他(level=6)",
+                    industry_name=industry_name or "",
+                    is_forward=item.has_forward(),
+                    forward_mid=item.forward_mid,
+                    forward_status="not_forward",
+                )
 
         self.logger.info(
             f"开始分类 mid={item.mid} uid={item.uid} industry={industry_name} type={media_type} forward={item.has_forward()}"
