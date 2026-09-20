@@ -120,21 +120,28 @@ python3 scripts/cleanup_mysql_audit.py
 python3 scripts/cleanup_mysql_audit.py --execute
 ```
 
-### 每周项目周报
+### 钉钉定时项目报告
 
-周报优先消费 `logs/runs/YYYYMMDD/*.jsonl`，因此不会将早期手工测试日志混入正式运行指标：
+报告优先消费 `logs/runs/YYYYMMDD/*.jsonl`，因此不会将早期手工测试日志混入正式运行指标。定时规则为：
+
+- 每天发送 T-1 日报；
+- 每周五额外、单独发送当周周一至周五的周汇总；
+- 每月最后一天额外、单独发送当月 1 日至当天的月汇总。
+
+可以按明确日期范围手工生成报告：
 
 ```bash
-# 只读生成最近 7 个自然日的统计报告
-python3 scripts/generate_weekly_report.py --days 7
+python3 scripts/generate_weekly_report.py \
+  --start-date 2026-09-19 --end-date 2026-09-19 --report-name 日报
 ```
 
 报告包括处理量、去重 mid、成功/兜底/失败/中断、闭环率、分类/行业/媒体/转发分布、平均/P50/P95 耗时、失败阶段、按天趋势、审计目录和磁盘健康度。
 
-项目配置已包含钉钉机器人和接收人。先手工验证，再在正式运行机安装每天 10:00（北京时间，含周末）的 cron：
+项目配置已包含钉钉机器人和接收人。先手工验证自动调度结果，再在正式运行机安装每天 10:00（北京时间，含周末）的 cron：
 
 ```bash
 python3 scripts/send_weekly_report.py --dry-run
+python3 scripts/send_weekly_report.py --run-date 2026-07-31 --dry-run
 python3 scripts/send_weekly_report.py
 
 bash scripts/install_weekly_report_cron.sh \
@@ -154,7 +161,7 @@ bash scripts/install_weekly_report_cron.sh \
 | 本地预演 | `run_classification.py`、`main.py` | `main.py` 是兼容别名，不用于正式回写 |
 | 关键回归测试 | `tests/test_production_guards.py` | 当前正式链路的离线保护测试 |
 | 模型接口测试 | `tests/new_request_modal_test/`（`test_model_cases.py`、`test_api_client_endpoints.py`、`compare_llm_endpoints.py`） | 具体样例断言、与原模型一致性对比、请求体参数单测、接口参数矩阵；见目录内 README |
-| 周报统计 | `scripts/generate_weekly_report.py`、`scripts/send_weekly_report.py`、`scripts/install_weekly_report_cron.sh` | JSONL 周报生成、企业机器人单聊发送和每天定时安装 |
+| 钉钉报告 | `scripts/generate_weekly_report.py`、`scripts/send_weekly_report.py`、`scripts/install_weekly_report_cron.sh` | JSONL 日/周/月报生成、企业机器人单聊发送和每天定时安装 |
 | 辅助数据脚本 | `scripts/count_xlsx_mids.py` | Excel 博文映射 mid |
 | SQL 排查工具 | `sql/query_detail-明细表查询.sql`、`sql/query_detail-明细表查询.sh`、`sql/query_task-查询有效任务.sh` | 只读查询任务/分表明细；不部署、不绕过 worker |
 

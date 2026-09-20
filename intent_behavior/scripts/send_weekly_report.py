@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """
-向钉钉个人单聊发送意图项目周报。
+按日历规则向钉钉个人单聊发送意图项目报告。
+
+自动调度规则：
+  - 每天发送 T-1 日报；
+  - 每周五另外发送当周周一至周五的周汇总；
+  - 每月最后一天另外发送当月 1 日至当天的月汇总。
+
+周汇总和月汇总与日报是独立钉钉消息。如果周五同时是月末，
+当天会依次发送日报、周汇总和月汇总三条消息。
 
 前置条件：
   1. 企业内部应用机器人已创建、配置为 Stream 模式并发布；
@@ -8,34 +16,25 @@
   3. 当前执行机器已安装并登录 dws，且能使用该机器人；
   4. config/config.yaml 已配置 notifications.dingtalk_weekly_report。
 
-配置优先级：
-  - RobotCode、接收人、标题、统计天数：优先读取 config.yaml；
-  - 同名环境变量可覆盖配置，便于临时换机器人或调试；
-  - DWS_RUNNER 可指定 dws 可执行文件或包装器命令。
-
-环境变量（可选覆盖）：
-  DINGTALK_CHAT_ROBOT_CODE    RobotCode
-  DINGTALK_RECIPIENT_USER_IDS 接收人 userId，多个以英文逗号分隔
-  DINGTALK_REPORT_TITLE       Markdown 标题
-  DINGTALK_REPORT_DAYS        统计天数
-  DWS_RUNNER                  dws 可执行文件或包装器命令，默认 dws
-
 运行方式：
   cd intent_behavior
 
-  # 按 config.yaml 的 notifications.dingtalk_weekly_report 发送
-  python3 scripts/send_weekly_report.py
-
-  # 仅生成预览，不实际发送
+  # 按当天日历规则预览，不发送
   python3 scripts/send_weekly_report.py --dry-run
+
+  # 预览指定日期会触发的报告，便于回归验证
+  python3 scripts/send_weekly_report.py --run-date 2026-07-31 --dry-run
+
+  # 手工预览某一类汇总（不受星期或月末条件限制）
+  python3 scripts/send_weekly_report.py --period weekly --dry-run
 
 定时执行（每天 10:00，北京时间，含周末）：
   0 10 * * * cd /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior && \
     /usr/bin/python3 scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1
 
 说明：
-  - 本脚本只发送，不创建机器人；
-  - 发送前先生成最近 7 个自然日的 JSONL 审计报告。
+  - 本脚本只生成和发送报告，不创建机器人；
+  - 文件名和配置节名保留 weekly_report 仅为兼容现有部署。
 """
 
 from __future__ import annotations
@@ -45,17 +44,28 @@ import os
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 GENERATE_SCRIPT = PROJECT_DIR / "scripts" / "generate_weekly_report.py"
 
 
+@dataclass(frozen=True)
+class ReportSpec:
+    period: str
+    report_name: str
+    start_day: date
+    end_day: date
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="通过钉钉企业机器人向个人单聊发送项目周报",
+        description="通过钉钉企业机器人按日历规则发送项目报告",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -64,9 +74,19 @@ def parse_args() -> argparse.Namespace:
         default=str(PROJECT_DIR / "config" / "config.yaml"),
         help="项目配置文件路径",
     )
-    parser.add_argument("--days", type=int, default=0, help="统计天数（0=读取配置）")
-    parser.add_argument("--title", default="", help="消息标题（为空=读取配置）")
-    parser.add_argument("--dry-run", action="store_true", help="只输出周报，不发送钉钉消息")
+    parser.add_argument(
+        "--run-date",
+        default="",
+        help="调度日期，格式 YYYY-MM-DD；默认为配置时区的当天",
+    )
+    parser.add_argument(
+        "--period",
+        choices=("auto", "daily", "weekly", "monthly"),
+        default="auto",
+        help="auto=按日历规则；其他值用于手工生成指定类型",
+    )
+    parser.add_argument("--title", default="", help="手工覆盖消息标题")
+    parser.add_argument("--dry-run", action="store_true", help="只输出报告，不发送钉钉消息")
     return parser.parse_args()
 
 
@@ -80,23 +100,18 @@ def load_dingtalk_config(path: str) -> Dict[str, Any]:
     try:
         import yaml  # type: ignore
     except ImportError:
-        weekly = _parse_weekly_report_config_without_pyyaml(content)
+        report_config = _parse_weekly_report_config_without_pyyaml(content)
     else:
         config = yaml.safe_load(content) or {}
-        weekly = config.get("notifications", {}).get("dingtalk_weekly_report", {})
+        report_config = config.get("notifications", {}).get("dingtalk_weekly_report", {})
 
-    if not isinstance(weekly, dict):
+    if not isinstance(report_config, dict):
         raise SystemExit("notifications.dingtalk_weekly_report 必须是对象")
-    return weekly
+    return report_config
 
 
 def _parse_weekly_report_config_without_pyyaml(content: str) -> Dict[str, Any]:
-    """
-    仅解析本项目 notifications.dingtalk_weekly_report 的简单 YAML 子树。
-
-    worker 本身仍推荐安装 requirements.txt 中的 PyYAML。本兜底仅保证独立周报
-    发送脚本在最小 Python 环境下可运行，不把整个 config.yaml 解析器重复实现一遍。
-    """
+    """仅解析本项目 notifications.dingtalk_weekly_report 的简单 YAML 子树。"""
     section_indent: int | None = None
     weekly_indent: int | None = None
     data: Dict[str, Any] = {}
@@ -148,6 +163,44 @@ def _parse_weekly_report_config_without_pyyaml(content: str) -> Dict[str, Any]:
     return data
 
 
+def parse_run_date(value: str, timezone_name: str = "Asia/Shanghai") -> date:
+    if not value:
+        try:
+            return datetime.now(ZoneInfo(timezone_name)).date()
+        except ZoneInfoNotFoundError as exc:
+            raise SystemExit(f"无效时区: {timezone_name}") from exc
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise SystemExit("--run-date 必须是 YYYY-MM-DD，例如 2026-09-20") from exc
+
+
+def is_month_last_day(day: date) -> bool:
+    return (day + timedelta(days=1)).month != day.month
+
+
+def scheduled_reports(run_day: date, period: str = "auto") -> List[ReportSpec]:
+    daily_day = run_day - timedelta(days=1)
+    daily = ReportSpec("daily", "日报", daily_day, daily_day)
+    week_start = run_day - timedelta(days=run_day.weekday())
+    weekly = ReportSpec("weekly", "周汇总", week_start, run_day)
+    monthly = ReportSpec("monthly", "月汇总", run_day.replace(day=1), run_day)
+
+    if period == "daily":
+        return [daily]
+    if period == "weekly":
+        return [weekly]
+    if period == "monthly":
+        return [monthly]
+
+    reports = [daily]
+    if run_day.weekday() == 4:
+        reports.append(weekly)
+    if is_month_last_day(run_day):
+        reports.append(monthly)
+    return reports
+
+
 def env_or_config(name: str, fallback: object) -> str:
     return os.getenv(name, "").strip() or str(fallback or "").strip()
 
@@ -164,41 +217,44 @@ def recipient_ids(config: dict) -> str:
     return ""
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_dingtalk_config(args.config)
-    if not bool(config.get("enabled", False)):
-        raise SystemExit("钉钉周报已在 config.yaml 中关闭，未发送任何消息。")
+def report_title(config: dict, spec: ReportSpec, override: str = "") -> str:
+    if override.strip():
+        return override.strip()
+    config_keys = {
+        "daily": ("DINGTALK_DAILY_REPORT_TITLE", "daily_title", "原生内容站项目日报"),
+        "weekly": ("DINGTALK_WEEKLY_REPORT_TITLE", "weekly_title", "原生内容站项目周汇总"),
+        "monthly": ("DINGTALK_MONTHLY_REPORT_TITLE", "monthly_title", "原生内容站项目月汇总"),
+    }
+    env_name, config_key, default = config_keys[spec.period]
+    return env_or_config(env_name, config.get(config_key, default))
 
-    robot_code = env_or_config("DINGTALK_CHAT_ROBOT_CODE", config.get("robot_code", ""))
-    recipients = recipient_ids(config)
-    title = args.title.strip() or env_or_config(
-        "DINGTALK_REPORT_TITLE", config.get("title", "原生内容站项目周报")
-    )
-    days = args.days or int(
-        env_or_config("DINGTALK_REPORT_DAYS", config.get("report_days", 7))
-    )
-    if not robot_code:
-        raise SystemExit("缺少 RobotCode：请在 config.yaml 或 DINGTALK_CHAT_ROBOT_CODE 配置。")
-    if not recipients:
-        raise SystemExit(
-            "缺少接收人：请在 config.yaml 或 DINGTALK_RECIPIENT_USER_IDS 配置。"
-        )
-    if days <= 0:
-        raise SystemExit("--days / report_days 必须为正整数。")
 
-    runner = shlex.split(os.getenv("DWS_RUNNER", "dws").strip() or "dws")
-    report = subprocess.run(
-        [sys.executable, str(GENERATE_SCRIPT), "--days", str(days)],
+def render_report(spec: ReportSpec) -> str:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(GENERATE_SCRIPT),
+            "--start-date",
+            spec.start_day.isoformat(),
+            "--end-date",
+            spec.end_day.isoformat(),
+            "--report-name",
+            spec.report_name,
+        ],
         cwd=str(PROJECT_DIR),
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    if args.dry_run:
-        print(report, end="")
-        return
 
+
+def send_report(
+    runner: List[str],
+    robot_code: str,
+    recipients: str,
+    title: str,
+    report: str,
+) -> None:
     command = runner + [
         "chat",
         "message",
@@ -215,7 +271,41 @@ def main() -> None:
         "json",
     ]
     subprocess.run(command, cwd=str(PROJECT_DIR), check=True)
-    print("钉钉周报发送成功。")
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_dingtalk_config(args.config)
+    if not bool(config.get("enabled", False)):
+        raise SystemExit("钉钉报告已在 config.yaml 中关闭，未发送任何消息。")
+
+    robot_code = env_or_config("DINGTALK_CHAT_ROBOT_CODE", config.get("robot_code", ""))
+    recipients = recipient_ids(config)
+    if not robot_code:
+        raise SystemExit("缺少 RobotCode：请在 config.yaml 或 DINGTALK_CHAT_ROBOT_CODE 配置。")
+    if not recipients:
+        raise SystemExit(
+            "缺少接收人：请在 config.yaml 或 DINGTALK_RECIPIENT_USER_IDS 配置。"
+        )
+
+    timezone_name = env_or_config(
+        "DINGTALK_REPORT_TIMEZONE", config.get("timezone", "Asia/Shanghai")
+    )
+    run_day = parse_run_date(args.run_date, timezone_name)
+    reports = scheduled_reports(run_day, args.period)
+    runner = shlex.split(os.getenv("DWS_RUNNER", "dws").strip() or "dws")
+
+    for index, spec in enumerate(reports):
+        title = report_title(config, spec, args.title)
+        report = render_report(spec)
+        if args.dry_run:
+            if index:
+                print()
+            print(f"=== {title} | {spec.start_day} ~ {spec.end_day} ===")
+            print(report, end="")
+            continue
+        send_report(runner, robot_code, recipients, title, report)
+        print(f"钉钉{spec.report_name}发送成功：{spec.start_day} ~ {spec.end_day}")
 
 
 if __name__ == "__main__":

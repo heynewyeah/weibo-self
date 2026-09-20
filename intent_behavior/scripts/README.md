@@ -20,13 +20,13 @@ python3 worker.py --config config/config.yaml
 | `cleanup_mysql_audit.py` | 预览/分批清理过期 MySQL 运行审计 | `python3 scripts/cleanup_mysql_audit.py --execute` |
 | `manual_classify_mid.py` | 指定一个 task_id + mid 预演、受控分类或回写 | `python3 scripts/manual_classify_mid.py --task-id <id> --mid <mid>` |
 | `count_xlsx_mids.py` | 查询 Excel 博文对应的 mid 并输出映射文件 | `python3 scripts/count_xlsx_mids.py --help` |
-| `generate_weekly_report.py` | 从 JSONL 运行审计生成只读周报（成功/失败/耗时/趋势/存储） | `python3 scripts/generate_weekly_report.py --days 7` |
-| `send_weekly_report.py` | 通过已发布的企业机器人向个人单聊发送周报 | `python3 scripts/send_weekly_report.py` |
+| `generate_weekly_report.py` | 从 JSONL 运行审计生成指定日期范围的只读报告 | `python3 scripts/generate_weekly_report.py --start-date 2026-09-19 --end-date 2026-09-19 --report-name 日报` |
+| `send_weekly_report.py` | 按日历规则发送 T-1 日报、周五汇总和月末汇总 | `python3 scripts/send_weekly_report.py` |
 | `install_weekly_report_cron.sh` | 安装/更新每天 10:00（含周末）的报告 cron | `bash scripts/install_weekly_report_cron.sh` |
 
-## 钉钉企业机器人周报
+## 钉钉企业机器人报告
 
-项目周报的推荐能力是钉钉“企业机器人”，而不是互动卡片或服务窗：它支持主动向个人单聊发送 Markdown 周报。
+项目报告使用钉钉“企业机器人”主动向个人单聊发送 Markdown。每天固定发 T-1 日报；周五另发当周汇总；月末最后一天另发当月汇总。各汇总与日报分开发送。
 
 企业机器人需在钉钉开发者后台完成以下步骤后才能启用发送：
 
@@ -40,6 +40,7 @@ python3 worker.py --config config/config.yaml
 
 ```bash
 python3 scripts/send_weekly_report.py --dry-run
+python3 scripts/send_weekly_report.py --run-date 2026-07-31 --dry-run
 python3 scripts/send_weekly_report.py
 ```
 

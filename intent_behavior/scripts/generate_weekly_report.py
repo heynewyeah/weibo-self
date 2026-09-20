@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-生成原生内容站 AI 意图分层项目的周运行报告（只读）。
+生成原生内容站 AI 意图分层项目的运行报告（只读）。
 
 数据来源：
   logs/runs/YYYYMMDD/<run_id>.jsonl
@@ -17,15 +17,17 @@
 运行方式：
   cd intent_behavior
 
-  # 生成最近 7 个自然日（含今天）的 Markdown 周报并输出到终端
-  python3 scripts/generate_weekly_report.py
+  # 生成某一天的日报
+  python3 scripts/generate_weekly_report.py \
+    --start-date 2026-09-19 --end-date 2026-09-19 --report-name 日报
 
-  # 指定统计窗口，并写到文件
-  python3 scripts/generate_weekly_report.py --days 7 \
+  # 生成指定日期范围的周汇总并写到文件
+  python3 scripts/generate_weekly_report.py \
+    --start-date 2026-09-14 --end-date 2026-09-18 --report-name 周汇总 \
     --output output/weekly_report.md
 
-  # 截止到指定日期（含该日），便于复盘历史周
-  python3 scripts/generate_weekly_report.py --end-date 2026-09-17
+  # 兼容手工复盘：以截止日为终点统计最近 N 天
+  python3 scripts/generate_weekly_report.py --days 7 --end-date 2026-09-17
 
 说明：
   - 没有 JSONL 审计数据时，脚本会明确显示“暂无正式运行审计数据”，不会把
@@ -53,7 +55,7 @@ DEFAULT_AUDIT_DIR = PROJECT_DIR / "logs" / "runs"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="生成原生内容站 AI 意图分层项目的只读周运行报告",
+        description="生成原生内容站 AI 意图分层项目的只读运行报告",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -66,7 +68,12 @@ def parse_args() -> argparse.Namespace:
         "--days",
         type=int,
         default=7,
-        help="统计最近多少个自然日（含截止日，默认 7）",
+        help="未指定 --start-date 时，统计最近多少个自然日（含截止日，默认 7）",
+    )
+    parser.add_argument(
+        "--start-date",
+        default="",
+        help="统计起始日，格式 YYYY-MM-DD；传入后不再使用 --days 反推",
     )
     parser.add_argument(
         "--end-date",
@@ -76,24 +83,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default="",
-        help="可选：将 Markdown 周报写到指定文件；不传则输出到终端",
+        help="可选：将 Markdown 报告写到指定文件；不传则输出到终端",
+    )
+    parser.add_argument(
+        "--report-name",
+        default="周报",
+        help="报告名称，例如日报、周汇总、月汇总",
     )
     return parser.parse_args()
+
+
+def parse_date(value: str, option_name: str, default: Optional[date] = None) -> date:
+    if not value and default is not None:
+        return default
+    if not value:
+        raise SystemExit(f"{option_name} 不能为空")
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise SystemExit(f"{option_name} 必须是 YYYY-MM-DD，例如 2026-09-17") from exc
 
 
 def parse_end_date(value: str) -> date:
     if not value:
         return datetime.now().date()
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise SystemExit("--end-date 必须是 YYYY-MM-DD，例如 2026-09-17") from exc
+    return parse_date(value, "--end-date")
 
 
 def date_range(end_day: date, days: int) -> Tuple[date, date]:
     if days <= 0:
         raise SystemExit("--days 必须为正整数")
     return end_day - timedelta(days=days - 1), end_day
+
+
+def explicit_date_range(start_value: str, end_day: date, days: int) -> Tuple[date, date]:
+    if not start_value:
+        return date_range(end_day, days)
+    start_day = parse_date(start_value, "--start-date")
+    if start_day > end_day:
+        raise SystemExit("--start-date 不能晚于 --end-date")
+    return start_day, end_day
 
 
 def iter_events(audit_dir: Path, start_day: date, end_day: date) -> Iterable[Dict[str, Any]]:
@@ -182,6 +211,7 @@ def build_report(
     start_day: date,
     end_day: date,
     audit_dir: Path,
+    report_name: str = "周报",
 ) -> str:
     result_events: List[Dict[str, Any]] = []
     runs: set[str] = set()
@@ -246,8 +276,13 @@ def build_report(
     audit_size = directory_size(audit_dir)
     disk = disk_usage(audit_dir)
 
+    date_label = (
+        start_day.isoformat()
+        if start_day == end_day
+        else f"{start_day.isoformat()} ~ {end_day.isoformat()}"
+    )
     lines = [
-        f"# 原生内容站 AI 意图分层周报（{start_day.isoformat()} ~ {end_day.isoformat()}）",
+        f"# 原生内容站 AI 意图分层{report_name}（{date_label}）",
         "",
         "## 运行概览",
         f"- 处理尝试：{processed}",
@@ -287,7 +322,7 @@ def build_report(
         lines.append("- 本统计窗口内无结构化错误阶段记录。")
     if not processed:
         lines.extend([
-            "- 当前没有可用于周报的 JSONL 审计记录。",
+            "- 当前没有可用于本报告的 JSONL 审计记录。",
             "- 请确认 `audit.local_enabled: true`，或启用并验证 MySQL 审计表后扩展统计来源。",
         ])
 
@@ -345,9 +380,16 @@ def disk_usage(path: Path) -> shutil._ntuple_diskusage:
 def main() -> None:
     args = parse_args()
     end_day = parse_end_date(args.end_date)
-    start_day, end_day = date_range(end_day, args.days)
+    start_day, end_day = explicit_date_range(args.start_date, end_day, args.days)
     audit_dir = Path(args.audit_dir).expanduser().resolve()
-    report = build_report(iter_events(audit_dir, start_day, end_day), start_day, end_day, audit_dir)
+    report_name = args.report_name.strip() or "报告"
+    report = build_report(
+        iter_events(audit_dir, start_day, end_day),
+        start_day,
+        end_day,
+        audit_dir,
+        report_name=report_name,
+    )
 
     if args.output:
         output = Path(args.output).expanduser()
@@ -355,7 +397,7 @@ def main() -> None:
             output = (PROJECT_DIR / output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(report, encoding="utf-8")
-        print(f"周报已写入: {output}")
+        print(f"报告已写入: {output}")
     else:
         print(report, end="")
 

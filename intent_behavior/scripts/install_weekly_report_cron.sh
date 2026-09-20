@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # 安装/更新“每天 10:00（北京时间，含周末）发送钉钉项目报告”的 cron 任务。
+# 发送脚本每天发 T-1 日报，周五另发当周汇总，月末另发当月汇总。
 #
 # 前置条件：
 #   1. 项目 config/config.yaml 已配置 notifications.dingtalk_weekly_report；
@@ -68,5 +69,5 @@ FILTERED="$(printf '%s\n' "$EXISTING" | grep -Fv "$MARKER" || true)"
   printf '%s\n' "$CRON_LINE"
 } | crontab -
 
-echo "已安装/更新 cron：每天 10:00（Asia/Shanghai，含周末）发送钉钉报告。"
+echo "已安装/更新 cron：每天 10:00（Asia/Shanghai）发 T-1 日报，周五/月末额外发汇总。"
 crontab -l | grep -F "$MARKER"
