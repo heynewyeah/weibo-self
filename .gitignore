@@ -1,6 +1,11 @@
 .DS_Store
 **/.DS_Store
 
+# Python 运行时字节码缓存，不应进入仓库。
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
 # 运行时日志与本地审计；生产排查保留在服务器，不提交代码仓库。
 intent_behavior/logs/
 
