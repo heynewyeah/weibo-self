@@ -75,6 +75,7 @@ class MidRecord:
     mid_text: str
     mid_pids: str
     mid_fids: str
+    short_url: str = ""
     forward_mid: str = ""
     forward_text: str = ""
     hit_mid_tag: str = ""
@@ -593,6 +594,7 @@ class MySQLTaskRepository:
         forward_mid_field = self.config.get("shard_forward_mid_field", "forward_mid")
         forward_text_field = self.config.get("shard_forward_text_field", "forward_text")
         hit_mid_tag_field = self.config.get("shard_hit_mid_tag_field", "hit_mid_tag")
+        short_url_field = self.config.get("shard_short_url_field", "short_url")
         hit_mid_tag = str(row.get(hit_mid_tag_field, "") or "")
         return MidRecord(
             id=int(row.get("id", 0)),
@@ -604,6 +606,7 @@ class MySQLTaskRepository:
             mid_text=str(row.get("mid_text", "") or ""),
             mid_pids=str(row.get("mid_pids", "") or ""),
             mid_fids=str(row.get("mid_fids", "") or ""),
+            short_url=str(row.get(short_url_field, "") or ""),
             forward_mid=str(row.get(forward_mid_field, "") or ""),
             forward_text=str(row.get(forward_text_field, "") or ""),
             hit_mid_tag=hit_mid_tag,

@@ -64,6 +64,7 @@ class ProcessResult:
     mode: str
     task_id: Optional[int] = None
     customer_id: Optional[int] = None
+    short_url: str = ""
     content_preview: str = ""
     pic_ids: List[str] = field(default_factory=list)
     video_fid: str = ""
@@ -104,6 +105,7 @@ class ProcessResult:
             "mode": self.mode,
             "task_id": self.task_id,
             "customer_id": self.customer_id,
+            "short_url": self.short_url,
             "content_preview": self.content_preview,
             "pic_ids": self.pic_ids,
             "video_fid": self.video_fid,
@@ -186,6 +188,7 @@ class ClassifyPipeline:
         if record is not None:
             result.task_id = record.super_task_id
             result.customer_id = record.customer_id
+            result.short_url = record.short_url or ""
             result.source_industry_name = record.task_industry_name or ""
             result.hit_mid_tag = record.hit_mid_tag or ""
             result.hit_brand_name = record.hit_brand_name or ""
@@ -574,6 +577,7 @@ class ClassifyPipeline:
 
         lines = [
             f"  │ 任务: task_id={result.task_id or '无'} | customer_id={result.customer_id or '无'}",
+            f"  │ 博文URL: {result.short_url or '无'}",
             f"  │ 输入: 行业={source_industry} | 品牌词={brand} | 话题词={topics} | "
             f"hit_mid_tag={result.hit_mid_tag or '无'} | 媒体={result.media_type}",
         ]

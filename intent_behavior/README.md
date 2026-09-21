@@ -17,7 +17,7 @@
 | 数据 | 来源/路径 | 用途 |
 | --- | --- | --- |
 | 有效任务 | `clue_collect_common.super_mid_task` | 读取 `task_id`、`operator_uid`、`industry_tag`、`brand_tag` |
-| 待处理博文 | `nature_ad_super_mid_{operator_uid % 20}` | 查询对应任务的 `level=0` 记录 |
+| 待处理博文 | `nature_ad_super_mid_{operator_uid % 20}` | 查询对应任务的 `level=0` 记录；日志中的博文链接取该表 `short_url` |
 | 转发上下文 | 分表字段 `forward_mid`、`forward_mid_text` | 缺少原博正文时归“其他”；正常时合并转发正文与原博正文 |
 | 品牌上下文 | 分表 `hit_mid_tag` + 任务 `brand_tag` JSON | 命中 tag 时精确解析品牌；没有命中时回退任务全部品牌词 |
 | 话题上下文 | 任务 `topic_code` | 动态解析任务话题词，与品牌词、正文和媒体共同用于分层 |

@@ -180,6 +180,7 @@ class RunAudit:
             "record_id": record.id if record else None,
             "mid": result.mid,
             "uid": result.uid,
+            "short_url": getattr(result, "short_url", ""),
             "industry": result.industry_name,
             "source_industry": getattr(result, "source_industry_name", ""),
             "industry_refine_note": getattr(result, "industry_refine_note", ""),

@@ -218,6 +218,7 @@ class ProductionGuardTests(unittest.TestCase):
             mode="auto",
             task_id=1307727027356303361,
             customer_id=7419005545,
+            short_url="https://weibo.com/7876703713/Rj2canhHP",
             content_preview="第一行\n第二行",
             forward_content="原博第一行\n原博第二行",
             pic_ids=[],
@@ -248,6 +249,7 @@ class ProductionGuardTests(unittest.TestCase):
         self.assertNotIn("uid=7876703713", output)
         self.assertIn("task_id=1307727027356303361", output)
         self.assertIn("customer_id=7419005545", output)
+        self.assertIn("博文URL: https://weibo.com/7876703713/Rj2canhHP", output)
         self.assertIn("品牌词=霸王茶姬", output)
         self.assertIn("话题词=霸王茶姬抹茶系列", output)
         self.assertIn("行业路由: 美食 → 奶茶", output)
@@ -295,6 +297,7 @@ class ProductionGuardTests(unittest.TestCase):
             {
                 "id": 1, "customer_id": 21, "super_task_id": 99, "mid": "m1",
                 "mid_uid": "u1", "hit_mid_tag": "tag:nio",
+                "short_url": "https://weibo.com/u1/code1",
             },
             task,
         )
@@ -306,6 +309,7 @@ class ProductionGuardTests(unittest.TestCase):
             task,
         )
         self.assertEqual("蔚来", exact.hit_brand_name)
+        self.assertEqual("https://weibo.com/u1/code1", exact.short_url)
         self.assertEqual("", missing.hit_brand_name)
         self.assertEqual(["蔚来", "乐道"], missing.task_brand_values)
 
