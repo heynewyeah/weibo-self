@@ -428,7 +428,7 @@ class BlogClassifier:
                 layer=self.failure_label,
                 media_type=MediaType.TEXT,
                 success=False,
-                error="API调用失败",
+                error=self.api_client.last_error or "API调用失败",
                 industry_name=industry_name,
             )
 
@@ -490,7 +490,7 @@ class BlogClassifier:
                 layer=self.failure_label,
                 media_type=MediaType.IMAGE,
                 success=False,
-                error="API调用失败",
+                error=self.api_client.last_error or "API调用失败",
                 industry_name=industry_name,
             )
 
@@ -565,7 +565,7 @@ class BlogClassifier:
                 layer=self.failure_label,
                 media_type=MediaType.VIDEO,
                 success=False,
-                error="API调用失败",
+                error=self.api_client.last_error or "API调用失败",
                 industry_name=industry_name,
             )
 

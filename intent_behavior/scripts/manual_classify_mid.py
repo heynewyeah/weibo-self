@@ -41,9 +41,9 @@
   python3 scripts/manual_classify_mid.py \
     --task-id 1302305683722469377 --mid 5279586697085338 --mode image
 
-Ctrl+C 行为：
-  - 当前 mid 保持 level=0（或保持原 level），不会被自动回写为 level=6；
-  - JSONL 审计会写入 interrupted 记录；
+中止与技术失败行为：
+  - Ctrl+C、反解失败、媒体处理失败或模型调用失败都不会被自动回写为 level=6；
+  - 当前 mid 保持 level=0（或保持原 level），JSONL 审计保留真实失败阶段与原因；
   - 下次运行 worker.py 时，仍会重新处理该 level=0 的 mid。
 """
 

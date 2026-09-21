@@ -91,8 +91,8 @@ class ProcessResult:
     level_code: Optional[int] = None
     writeback_state: str = "not_requested"
     writeback_response: Dict[str, Any] = field(default_factory=dict)
-    # 业务处理失败后，如果已按约定回写 level=6，则该条不再会以 level=0 反复消费。
-    # `success` 仍表示最终链路已完成；真实失败阶段保留在 error_stage/error 中供审计追溯。
+    # 兼容历史审计字段。新逻辑不再将反解/媒体/模型等技术失败回写为 level=6；
+    # 技术失败保持 level=0，等待下一轮或人工重试。
     fallback_level_written: bool = False
     # 人工 Ctrl+C 中止不是业务分类失败，不能回写 level=6。
     interrupted: bool = False
@@ -208,7 +208,7 @@ class ClassifyPipeline:
             except Exception as e:
                 result.error = f"反解失败: {str(e)}"
                 result.error_stage = "resolve"
-                # 反解失败是终态业务兜底：若允许回写，则写 level=6；审计仍保留 resolve 失败。
+                # 反解失败属于技术失败，保持 level=0 等待重试。
                 self._write_resolve_fail_log(result, record)
                 result.layer = self.classifier.other_label
                 result.success = False
@@ -325,15 +325,11 @@ class ClassifyPipeline:
             result.timings.cleanup_ms = (time.perf_counter() - t_cleanup_start) * 1000
             result.timings.total_ms = (time.perf_counter() - t_total_start) * 1000
 
-            # 分类失败可按业务约定写 level=6，避免记录一直停留在 level=0。
-            # 回写本身失败时不能再改写为 6：原请求可能已在服务端异步生效，
-            # 此时贸然补 6 会与原目标层级产生竞态，需保留 level=0 并按审计排障。
-            # 人工中止同样不能补写 6：下次启动应继续处理该 level=0 记录。
-            if not result.success and result.error_stage not in {"writeback", "interrupted"}:
-                self._write_failure_fallback_level(
-                    result=result,
-                    record=record,
-                    write_back=write_back,
+            # 技术链路失败不是业务分类结果，绝不能伪造为 level=6。
+            # 只有 classifier 成功返回 1/2/3/6 时才会进入 update_level_result。
+            if not result.success and result.writeback_state == "not_requested" and write_back:
+                result.writeback_state = (
+                    "skipped_interrupted" if result.interrupted else "skipped_technical_failure"
                 )
 
             if result.error_stage:
@@ -343,57 +339,6 @@ class ClassifyPipeline:
             self.audit.record_result(result, record)
 
         return result
-
-    def _write_failure_fallback_level(
-        self,
-        result: ProcessResult,
-        record: Optional[MidRecord],
-        write_back: bool,
-    ) -> None:
-        """
-        将可确认的处理失败终态写为 level=6。
-
-        约束：
-        - 仅生产回写链路且有分表记录时执行；
-        - 只用于反解/分类等处理失败，不用于 HTTP 回写失败；
-        - 下游仅更新 level=0，因此并发实例已处理的记录不会被覆盖；
-        - 审计仍保留原 error_stage/error，不能把 fallback 当作正常模型分类。
-        """
-        if result.fallback_level_written or not write_back or record is None or self.repo is None:
-            return
-        try:
-            from .models import ClassifyResult as ClassificationResult
-
-            t_writeback_start = time.perf_counter()
-            fallback = ClassificationResult(
-                mid=result.mid,
-                uid=result.uid,
-                layer=self.classifier.other_label,
-                media_type=result.media_type or "unknown",
-                success=True,
-                industry_name=result.industry_name or record.task_industry_name,
-            )
-            writeback_result = self.repo.update_level_result(None, record, fallback)
-            result.timings.writeback_ms += (time.perf_counter() - t_writeback_start) * 1000
-            result.layer = self.classifier.other_label
-            result.level_code = int(writeback_result.get("level", 6))
-            result.writeback_state = str(writeback_result.get("state", "applied"))
-            result.writeback_response = dict(writeback_result.get("response") or {})
-            result.fallback_level_written = True
-            # 此条的最终业务状态已闭环；错误字段保留原始失败原因。
-            result.success = True
-            self.logger.debug(
-                "处理失败已按兜底规则回写 level=6 mid=%s stage=%s",
-                result.mid,
-                result.error_stage or "unknown",
-            )
-        except Exception as exc:
-            self.logger.warning(
-                "处理失败回写 level=6 失败 mid=%s stage=%s error=%s",
-                result.mid,
-                result.error_stage or "unknown",
-                exc,
-            )
 
     def process_batch(
         self,
@@ -610,11 +555,12 @@ class ClassifyPipeline:
         forward_mid = result.forward_mid or "无"
         video_fid = result.video_fid or "无"
         video_cover_url = result.video_cover_url or "无"
-        level_text = (
-            f"level={result.level_code}（{result.layer}）"
-            if result.level_code is not None
-            else f"层级={result.layer}"
-        )
+        if not result.success and result.error_stage != "writeback":
+            level_text = "未生成（技术失败，不是业务等级）"
+        elif result.level_code is not None:
+            level_text = f"level={result.level_code}（{result.layer}）"
+        else:
+            level_text = f"层级={result.layer}"
         writeback_labels = {
             "applied": "成功",
             "already_applied": "已是目标值",
@@ -622,6 +568,8 @@ class ClassifyPipeline:
             "not_requested": "未执行（预览）",
             "pending": "执行中",
             "failed": "失败",
+            "skipped_technical_failure": "未回写（技术失败，保留 level=0 待重试）",
+            "skipped_interrupted": "未回写（人工中止，保留 level=0）",
         }
 
         lines = [
@@ -658,8 +606,10 @@ class ClassifyPipeline:
             lines.append(f"  └─ ⚠️ 处理完成（异常兜底） | {level_text}")
         elif result.success:
             lines.append(f"  └─ ✅ 处理成功 | {level_text}")
+        elif result.error_stage == "writeback":
+            lines.append("  └─ ❌ 处理失败 | 回写结果未确认，请核查数据库")
         else:
-            lines.append("  └─ ❌ 处理失败")
+            lines.append("  └─ ❌ 处理失败 | 未回写，level=0 待重试")
 
         for line in lines:
             if result.success and not result.fallback_level_written:

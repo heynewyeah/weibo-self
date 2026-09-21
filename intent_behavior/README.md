@@ -41,12 +41,14 @@ super_mid_task.operator_uid
       └─ 正常：转发正文 + 原博正文综合分类
   → 图片下载 / 视频抽帧（视频超过 300 秒或 200MB 降级封面；仍失败降级文本）
   → 品牌词 + 话题词 + 正文 + 图片/视频的完整 AI 分类为 level=1/2/3/6
+      └─ 反解、媒体或模型技术失败：不生成业务等级，保持 level=0 待重试
   → HTTP update-level 回写（服务端只更新 level=0）
   → 超时或 data=0 时只读查询分表确认最终 level
   → 审计、缓存清理
 ```
 
-`Ctrl+C` 中止当前 mid 时，不写 level=6，未完成记录应保持 `level=0`，下次 worker 会继续处理。
+`Ctrl+C` 中止，或反解、图片/视频处理、模型请求、模型结果解析失败时，都不写
+`level=6`。这些都是技术失败，不是“其他”分类结果；记录保持 `level=0`，下一轮 worker 或人工命令会重试。
 
 ## 4. 写到哪里
 
@@ -109,7 +111,7 @@ python3 worker.py --config config/config.yaml --once
 | 某 task 没被消费 | `super_mid_task`、`operator_uid`、分表路由 | `scripts/production_preflight.py` |
 | 某 mid 为什么是某层级/其他 | JSONL 的 `run_id`、`mid_processed` 的 `model_output`/`forward_status` | `scripts/manual_classify_mid.py --task-id <id> --mid <mid>` |
 | 回写超时却怀疑已落库 | 分表该 mid 的 `level`、审计 `error_stage=writeback` | `scripts/manual_classify_mid.py`（先不回写预演） |
-| 反解/媒体/模型失败 | JSONL 的 `error_stage`、`error`、耗时 | `logs/runs/YYYYMMDD/` |
+| 反解/媒体/模型失败 | JSONL 的 `error_stage`、`error`、耗时；分表应保持 `level=0` | 下一轮 worker 自动重试，或用 `scripts/manual_classify_mid.py` 手工复测 |
 | 旧版本误把中断写成 6 | 先确认审计和人工判断 | `scripts/manual_classify_mid.py --retry-level-6 --write-back` |
 | 回归关键业务保护 | 不连库、不调模型的离线测试 | `python3 -m unittest tests.test_production_guards -v` |
 | 模型连通性 | 模型服务状态（当前为 KServe 网关） | `python3 check_model_service.py` |

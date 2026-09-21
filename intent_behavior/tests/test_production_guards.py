@@ -8,7 +8,8 @@
   - 转发“未发现异常”不被误判为异常；
   - 正常转发按“转发正文 + 原博正文”合并；
   - 回写 data=0 / 网络超时后的只读确认；
-  - 失败按规则回写 level=6；
+  - 反解/媒体/模型技术失败不回写，保留 level=0；
+  - 图文请求严格遵守单次图片数上限；
   - 视频超过 300 秒时降级封面。
 
 运行方式：
@@ -30,7 +31,9 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_DIR)
 
 from src.classifier import BlogClassifier
+from src.api_client import VLLMClient
 from src.db_client import MidRecord, MySQLTaskRepository, TaskRecord, parse_topic_values
+from src.media_handler import ImageHandler
 from src.models import BlogItem, ClassifyResult
 from src.pipeline import ClassifyPipeline, ProcessResult
 from src.utils import extract_forward_status
@@ -357,18 +360,62 @@ class ProductionGuardTests(unittest.TestCase):
             state = repo.update_level_result(None, record, result)
         self.assertEqual("confirmed_after_transport_error", state["state"])
 
-    def test_failure_is_closed_with_level_six_when_writeback_enabled(self):
+    def test_model_failure_keeps_level_zero_without_writeback(self):
         pipeline = ClassifyPipeline(minimal_config())
         pipeline.repo = MagicMock()
-        result = ProcessResult(
-            mid="m", uid="u", mode="auto", success=False,
-            error_stage="classify", error="模型不可用", industry_name="汽车",
+        pipeline.resolver = MagicMock()
+        pipeline.resolver.resolve.return_value = MagicMock(
+            uid="u",
+            content="测试正文",
+            pic_ids=[],
+            video_fid="",
+            video_cover_url="",
+            has_image=lambda: False,
+            has_video=lambda: False,
+            to_blog_item=lambda: BlogItem(mid="m", uid="u", content="测试正文"),
         )
-        pipeline._write_failure_fallback_level(result, make_record(), write_back=True)
-        self.assertTrue(result.fallback_level_written)
-        self.assertTrue(result.success)
-        self.assertEqual("其他", result.layer)
-        pipeline.repo.update_level_result.assert_called_once()
+        pipeline.classifier = MagicMock()
+        pipeline.classifier.classify_item.return_value = ClassifyResult(
+            mid="m", uid="u", layer="未识别", media_type="image",
+            success=False, error="模型API HTTP 400 拒绝请求", industry_name="汽车",
+        )
+
+        result = pipeline.process_one("m", uid="u", write_back=True, record=make_record())
+
+        self.assertFalse(result.success)
+        self.assertFalse(result.fallback_level_written)
+        self.assertIsNone(result.level_code)
+        self.assertEqual("skipped_technical_failure", result.writeback_state)
+        pipeline.repo.update_level_result.assert_not_called()
+
+    def test_image_handler_enforces_request_image_limit_for_resolved_pids(self):
+        handler = ImageHandler({"max_images_per_request": 3})
+        pids = [f"pid{i}" for i in range(16)]
+
+        with patch("src.media_handler.local_file_writes_allowed", return_value=True), \
+             patch("src.media_handler.os.makedirs"), \
+             patch.object(handler, "download_image", return_value=True) as download:
+            paths = handler.download_images_by_pids(pids, "/tmp/unit-image-limit")
+
+        self.assertEqual(3, len(paths))
+        self.assertEqual(3, download.call_count)
+        self.assertTrue(paths[0].endswith("pid0.jpg"))
+        self.assertTrue(paths[-1].endswith("pid2.jpg"))
+
+    def test_model_http_400_is_not_retried_and_preserves_response_detail(self):
+        client = VLLMClient(
+            {"url": "http://unit-test", "model": "unit-test", "max_retry": 3},
+            logging.getLogger("test.model.http400"),
+        )
+        response = MagicMock(status_code=400, text='{"message":"too many images"}')
+
+        with patch("src.api_client.requests.post", return_value=response) as post:
+            data = client._call_api({"messages": []})
+
+        self.assertIsNone(data)
+        self.assertEqual(1, post.call_count)
+        self.assertIn("HTTP 400", client.last_error)
+        self.assertIn("too many images", client.last_error)
 
     def test_local_preview_does_not_write_mysql_audit(self):
         from src.audit import RunAudit

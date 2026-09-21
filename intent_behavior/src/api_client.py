@@ -38,6 +38,7 @@ class VLLMClient:
         self.max_retry = config.get("max_retry", 3)
         self.retry_backoff_base = config.get("retry_backoff_base", 2)
         self.logger = logger
+        self.last_error = ""
 
     def _build_payload(self, system_prompt: str, user_content) -> Dict[str, Any]:
         """
@@ -85,6 +86,7 @@ class VLLMClient:
         Returns:
             API响应字典，失败返回 None
         """
+        self.last_error = ""
         for attempt in range(1, self.max_retry + 1):
             try:
                 resp = requests.post(
@@ -93,25 +95,43 @@ class VLLMClient:
                     timeout=self.timeout,
                     headers={"Content-Type": "application/json"}
                 )
+                # 除 408/429 外的 4xx 通常是请求体、参数或权限问题，原样重试没有意义。
+                if 400 <= resp.status_code < 500 and resp.status_code not in {408, 429}:
+                    response_text = " ".join((resp.text or "").split())[:500]
+                    self.last_error = (
+                        f"模型API HTTP {resp.status_code} 拒绝请求"
+                        + (f": {response_text}" if response_text else "")
+                    )
+                    self.logger.error("%s（不重试）", self.last_error)
+                    return None
                 resp.raise_for_status()
                 data = resp.json()
 
                 if "choices" in data and len(data["choices"]) > 0:
                     return data
 
-                self.logger.warning(f"API返回结构异常，第{attempt}次重试")
+                self.last_error = "API返回结构异常：缺少 choices"
+                self.logger.warning(f"{self.last_error}，第{attempt}次重试")
 
             except requests.exceptions.Timeout:
-                self.logger.warning(f"API请求超时，第{attempt}/{self.max_retry}次重试...")
+                self.last_error = f"API请求超时（第{attempt}/{self.max_retry}次）"
+                self.logger.warning(f"{self.last_error}，准备重试...")
             except requests.exceptions.RequestException as e:
-                self.logger.warning(f"API请求异常: {e}，第{attempt}/{self.max_retry}次重试...")
+                self.last_error = f"API请求异常: {e}"
+                self.logger.warning(f"{self.last_error}，第{attempt}/{self.max_retry}次重试...")
             except Exception as e:
-                self.logger.warning(f"未知异常: {e}，第{attempt}/{self.max_retry}次重试...")
+                self.last_error = f"模型API未知异常: {e}"
+                self.logger.warning(f"{self.last_error}，第{attempt}/{self.max_retry}次重试...")
 
             if attempt < self.max_retry:
                 time.sleep(self.retry_backoff_base ** attempt)
 
-        self.logger.error(f"API调用失败，已达最大重试次数({self.max_retry})")
+        if not self.last_error:
+            self.last_error = "API调用失败"
+        self.logger.error(
+            "API调用失败，已达最大重试次数(%s): %s",
+            self.max_retry, self.last_error,
+        )
         return None
 
     def classify_text(self, system_prompt: str, user_prompt: str,

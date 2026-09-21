@@ -40,7 +40,7 @@ class ImageHandler:
         """
         self.url_pattern = config.get("url_pattern", "https://wx2.sinaimg.cn/mw690/{pid}.jpg")
         self.download_timeout = config.get("download_timeout", 30)
-        self.max_images = config.get("max_images_per_request", 3)
+        self.max_images = max(1, int(config.get("max_images_per_request", 3)))
         self.logger = logger or logging.getLogger(__name__)
         self.storage_config = storage_config or {}
 
@@ -154,9 +154,19 @@ class ImageHandler:
             self.logger.warning("磁盘空间不足，跳过图片处理并降级文本")
             return []
         os.makedirs(tmp_dir, exist_ok=True)
+        # 反解接口可能直接返回十几张 pid；请求上限必须在这个入口统一执行，
+        # 否则大量 base64 图片会让多模态网关直接返回 HTTP 400。
+        unique_pids = list(dict.fromkeys(str(pid).strip() for pid in pids if str(pid).strip()))
+        selected_pids = unique_pids[:self.max_images]
+        if len(unique_pids) > len(selected_pids):
+            self.logger.info(
+                "图片数量=%s 超过单次模型请求上限=%s，本次仅选取前 %s 张",
+                len(unique_pids), self.max_images, len(selected_pids),
+            )
+
         downloaded = []
 
-        for i, pid in enumerate(pids):
+        for i, pid in enumerate(selected_pids):
             url = self.pid_to_url(pid)
             save_path = os.path.join(tmp_dir, f"{pid}.jpg")
 
