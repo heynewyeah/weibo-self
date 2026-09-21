@@ -212,9 +212,13 @@ class MySQLShardWorker:
 
         for record_idx, record in enumerate(pending_records, 1):
             self.logger.info("")
-            self.logger.info(f"  ┌─ mid [{record_idx}/{len(pending_records)}] "
-                             f"mid={record.mid} uid={record.mid_uid} "
-                             f"forward_mid={record.forward_mid or '无'}")
+            record_header = (
+                f"  ┌─ [{record_idx}/{len(pending_records)}] "
+                f"mid={record.mid} uid={record.mid_uid}"
+            )
+            if record.has_forward():
+                record_header += f" forward_mid={record.forward_mid}"
+            self.logger.info(record_header)
 
             try:
                 outcome = self._process_record(task, record)
@@ -227,11 +231,9 @@ class MySQLShardWorker:
             if outcome == "success":
                 task_summary["success"] += 1
                 self.stats.success_count += 1
-                self.logger.info(f"  └─ ✅ 处理成功")
             elif outcome == "fallback":
                 task_summary["fallback"] += 1
                 self.stats.fallback_count += 1
-                self.logger.warning("  └─ ⚠️ 处理失败，已按规则回写 level=6")
             elif outcome == "skipped":
                 task_summary["skipped"] += 1
                 self.stats.skip_count += 1
@@ -239,7 +241,6 @@ class MySQLShardWorker:
             else:
                 task_summary["fail"] += 1
                 self.stats.fail_count += 1
-                self.logger.info(f"  └─ ❌ 处理失败")
 
         self.logger.info("")
         self.logger.info(f"  任务完成: task_id={task.task_id} "

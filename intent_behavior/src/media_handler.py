@@ -336,7 +336,7 @@ class VideoHandler:
             if file_size < 1024:
                 self.logger.warning(f"视频文件过小({file_size}B)，可能异常: {url}")
                 return False
-            self.logger.info(f"视频下载成功: {save_path} ({file_size // 1024}KB)")
+            self.logger.debug(f"视频下载成功: {save_path} ({file_size // 1024}KB)")
             return True
         except requests.exceptions.Timeout:
             self.logger.warning(f"视频下载超时: {url}")
@@ -400,7 +400,7 @@ class VideoHandler:
         fps = cap.get(cv2.CAP_PROP_FPS)
         duration_s = total_frames / fps if fps > 0 else 0
 
-        self.logger.info(
+        self.logger.debug(
             f"视频信息: 总帧数={total_frames} FPS={fps:.1f} 时长={duration_s:.1f}s"
         )
 
@@ -439,7 +439,7 @@ class VideoHandler:
                 self.logger.warning(f"帧保存失败: frame_no={frame_no}")
 
         cap.release()
-        self.logger.info(
+        self.logger.debug(
             f"抽帧完成: 目标{actual_n}帧，实际获取{len(frame_paths)}帧"
         )
         return frame_paths
@@ -553,7 +553,7 @@ class VideoHandler:
             return []
 
         effective_mode = mode or self.video_mode
-        self.logger.info(f"视频处理模式: {effective_mode}, fid={media_id}")
+        self.logger.debug(f"视频处理模式: {effective_mode}, fid={media_id}")
 
         if effective_mode == "frame":
             return self.process_video_frames(media_id, customer_id)

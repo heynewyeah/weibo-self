@@ -62,6 +62,8 @@ class ProcessResult:
     mid: str
     uid: str
     mode: str
+    task_id: Optional[int] = None
+    customer_id: Optional[int] = None
     content_preview: str = ""
     pic_ids: List[str] = field(default_factory=list)
     video_fid: str = ""
@@ -73,15 +75,22 @@ class ProcessResult:
     error_stage: str = ""
     model_output: str = ""
     industry_name: str = ""
+    source_industry_name: str = ""
+    industry_refine_note: str = ""
     is_forward: bool = False
     forward_mid: str = ""
     forward_content: str = ""
     forward_status: str = "not_forward"
     hit_mid_tag: str = ""
     hit_brand_name: str = ""
+    brand_terms: List[str] = field(default_factory=list)
+    topic_terms: List[str] = field(default_factory=list)
     resolved: Optional[ResolvedBlog] = None
     timings: ProcessTimings = field(default_factory=ProcessTimings)
     write_back: bool = False
+    level_code: Optional[int] = None
+    writeback_state: str = "not_requested"
+    writeback_response: Dict[str, Any] = field(default_factory=dict)
     # 业务处理失败后，如果已按约定回写 level=6，则该条不再会以 level=0 反复消费。
     # `success` 仍表示最终链路已完成；真实失败阶段保留在 error_stage/error 中供审计追溯。
     fallback_level_written: bool = False
@@ -93,6 +102,8 @@ class ProcessResult:
             "mid": self.mid,
             "uid": self.uid,
             "mode": self.mode,
+            "task_id": self.task_id,
+            "customer_id": self.customer_id,
             "content_preview": self.content_preview,
             "pic_ids": self.pic_ids,
             "video_fid": self.video_fid,
@@ -104,14 +115,21 @@ class ProcessResult:
             "error_stage": self.error_stage,
             "model_output": self.model_output,
             "industry_name": self.industry_name,
+            "source_industry_name": self.source_industry_name,
+            "industry_refine_note": self.industry_refine_note,
             "is_forward": self.is_forward,
             "forward_mid": self.forward_mid,
             "forward_content": self.forward_content,
             "forward_status": self.forward_status,
             "hit_mid_tag": self.hit_mid_tag,
             "hit_brand_name": self.hit_brand_name,
+            "brand_terms": self.brand_terms,
+            "topic_terms": self.topic_terms,
             "timings": self.timings.to_dict(),
             "write_back": self.write_back,
+            "level_code": self.level_code,
+            "writeback_state": self.writeback_state,
+            "writeback_response": self.writeback_response,
             "fallback_level_written": self.fallback_level_written,
             "interrupted": self.interrupted,
         }
@@ -166,8 +184,16 @@ class ClassifyPipeline:
 
         # 从 record 中提取 hit_mid_tag 和转发信息
         if record is not None:
+            result.task_id = record.super_task_id
+            result.customer_id = record.customer_id
+            result.source_industry_name = record.task_industry_name or ""
             result.hit_mid_tag = record.hit_mid_tag or ""
             result.hit_brand_name = record.hit_brand_name or ""
+            result.brand_terms = (
+                [record.hit_brand_name]
+                if record.hit_brand_name else list(record.task_brand_values)
+            )
+            result.topic_terms = list(record.task_topic_values)
             result.forward_mid = record.forward_mid or ""
             result.forward_content = record.forward_text or ""
 
@@ -207,10 +233,8 @@ class ClassifyPipeline:
                 if record is not None:
                     item.industry_name = record.task_industry_name
                     # 优先使用 hit_mid_tag 反解析出的“命中品牌词”；无命中时兼容回退到任务品牌词列表
-                    if record.hit_brand_name:
-                        item.brand_values = [record.hit_brand_name]
-                    else:
-                        item.brand_values = list(record.task_brand_values)
+                    item.brand_values = list(result.brand_terms)
+                    item.topic_values = list(result.topic_terms)
                     item.forward_mid = str(record.forward_mid or "")
                     item.forward_content = record.forward_text or ""
                     item.extra.update({
@@ -248,6 +272,7 @@ class ClassifyPipeline:
             result.error = classify_result.error
             result.model_output = classify_result.model_output
             result.industry_name = classify_result.industry_name
+            result.industry_refine_note = classify_result.industry_refine_note
             result.is_forward = classify_result.is_forward
             result.forward_mid = classify_result.forward_mid
             result.forward_status = classify_result.forward_status
@@ -256,11 +281,22 @@ class ClassifyPipeline:
                 result.error_stage = "classify"
                 raise RuntimeError(classify_result.error or "分类器返回失败")
 
+            if record is not None and self.repo is not None:
+                result.level_code = self.repo.get_level_code(
+                    classify_result.industry_name or record.task_industry_name,
+                    classify_result.layer,
+                )
+
             if write_back and record is not None and self.repo is not None:
                 t_writeback_start = time.perf_counter()
+                result.writeback_state = "pending"
                 try:
-                    self.repo.update_level_result(None, record, classify_result)
+                    writeback_result = self.repo.update_level_result(None, record, classify_result)
+                    result.level_code = int(writeback_result["level"])
+                    result.writeback_state = str(writeback_result.get("state", "applied"))
+                    result.writeback_response = dict(writeback_result.get("response") or {})
                 except Exception as e:
+                    result.writeback_state = "failed"
                     result.error = f"回写失败: {str(e)}"
                     result.error_stage = "writeback"
                     result.success = False
@@ -337,13 +373,16 @@ class ClassifyPipeline:
                 success=True,
                 industry_name=result.industry_name or record.task_industry_name,
             )
-            self.repo.update_level_result(None, record, fallback)
+            writeback_result = self.repo.update_level_result(None, record, fallback)
             result.timings.writeback_ms += (time.perf_counter() - t_writeback_start) * 1000
             result.layer = self.classifier.other_label
+            result.level_code = int(writeback_result.get("level", 6))
+            result.writeback_state = str(writeback_result.get("state", "applied"))
+            result.writeback_response = dict(writeback_result.get("response") or {})
             result.fallback_level_written = True
             # 此条的最终业务状态已闭环；错误字段保留原始失败原因。
             result.success = True
-            self.logger.warning(
+            self.logger.debug(
                 "处理失败已按兜底规则回写 level=6 mid=%s stage=%s",
                 result.mid,
                 result.error_stage or "unknown",
@@ -559,34 +598,68 @@ class ClassifyPipeline:
 
     def _log_result(self, result: ProcessResult):
         t = result.timings
-        if result.fallback_level_written:
-            status = "⚠️ 失败已兜底为 level=6"
-        else:
-            status = "✅ 成功" if result.success else "❌ 失败"
+        source_industry = result.source_industry_name or result.industry_name or "无"
+        effective_industry = result.industry_name or source_industry
+        brand = "、".join(result.brand_terms) if result.brand_terms else "无"
+        topics = "、".join(result.topic_terms) if result.topic_terms else "无"
+        forward_text = "是" if result.is_forward else "否"
+        content_preview = " ".join((result.content_preview or "").split())[:200] or "无"
+        # 原博内容是用户明确要求的排障上下文，不做字符截断；
+        # 仅折叠换行，保持每个 mid 的结果块易读。
+        forward_content = " ".join((result.forward_content or "").split()) or "无"
+        forward_mid = result.forward_mid or "无"
+        video_fid = result.video_fid or "无"
+        video_cover_url = result.video_cover_url or "无"
+        level_text = (
+            f"level={result.level_code}（{result.layer}）"
+            if result.level_code is not None
+            else f"层级={result.layer}"
+        )
+        writeback_labels = {
+            "applied": "成功",
+            "already_applied": "已是目标值",
+            "confirmed_after_transport_error": "响应异常，已确认落库",
+            "not_requested": "未执行（预览）",
+            "pending": "执行中",
+            "failed": "失败",
+        }
 
         lines = [
-            "=" * 60,
-            f"处理结果 [{status}] mid={result.mid} uid={result.uid}",
-            f"  模式: {result.mode}",
-            f"  行业: {result.industry_name}",
-            f"  hit_mid_tag: {result.hit_mid_tag}",
-            f"  命中品牌词: {result.hit_brand_name or '无'}",
-            f"  是否转发: {result.is_forward}",
-            f"  原博文mid(forward_mid): {result.forward_mid}",
-            f"  原博文内容: {(result.forward_content or '')[:120]}",
-            f"  转发判定: {result.forward_status}",
-            f"  媒体类型: {result.media_type}",
-            f"  分类层级: {result.layer}",
-            f"  正文预览: {result.content_preview[:120]}",
-            f"  图片 pid: {result.pic_ids}",
-            f"  视频 fid: {result.video_fid}",
-            f"  视频封面: {result.video_cover_url}",
-            f"  耗时: 反解={t.resolve_ms:.0f}ms 分类={t.classify_ms:.0f}ms 清理={t.cleanup_ms:.0f}ms 回写={t.writeback_ms:.0f}ms 总计={t.total_ms:.0f}ms",
+            f"  │ 任务: task_id={result.task_id or '无'} | customer_id={result.customer_id or '无'}",
+            f"  │ 输入: 行业={source_industry} | 品牌词={brand} | 话题词={topics} | "
+            f"hit_mid_tag={result.hit_mid_tag or '无'} | 媒体={result.media_type}",
         ]
+        if result.industry_refine_note:
+            lines.append(
+                f"  │ 行业路由: {source_industry} → {effective_industry} | {result.industry_refine_note}"
+            )
+        lines.extend([
+            f"  │ 正文预览: {content_preview}",
+            f"  │ 是否转发: {forward_text}",
+            f"  │ 原博文mid(forward_mid): {forward_mid}",
+            f"  │ 原博文内容: {forward_content}",
+            f"  │ 转发判定: {result.forward_status}",
+            f"  │ 图片 pid: {result.pic_ids}",
+            f"  │ 视频 fid: {video_fid}",
+            f"  │ 视频封面: {video_cover_url}",
+            f"  │ 分类结果: {level_text}",
+            f"  │ 回写状态: {writeback_labels.get(result.writeback_state, result.writeback_state)}",
+        ])
+        if result.writeback_response:
+            lines.append(f"  │ 回写响应: resp={result.writeback_response!r}")
         if result.error_stage:
-            lines.append(f"  失败阶段: {result.error_stage}")
-            lines.append(f"  错误信息: {result.error[:300]}")
-        lines.append("=" * 60)
+            lines.append(f"  │ 异常: 阶段={result.error_stage} | {result.error[:300]}")
+        lines.append(
+            f"  │ 耗时: 反解={t.resolve_ms:.0f}ms 分类={t.classify_ms:.0f}ms "
+            f"清理={t.cleanup_ms:.0f}ms 回写={t.writeback_ms:.0f}ms 总计={t.total_ms:.0f}ms"
+        )
+
+        if result.fallback_level_written:
+            lines.append(f"  └─ ⚠️ 处理完成（异常兜底） | {level_text}")
+        elif result.success:
+            lines.append(f"  └─ ✅ 处理成功 | {level_text}")
+        else:
+            lines.append("  └─ ❌ 处理失败")
 
         for line in lines:
             if result.success and not result.fallback_level_written:

@@ -40,6 +40,7 @@ class BlogItem:
         media_ids: 视频media_id列表（若数据源提供独立字段）
         industry_name: 当前任务识别出的行业（如 汽车 / 奶茶）
         brand_values: 当前任务关联的品牌词 value 列表
+        topic_values: 当前任务关联的话题词列表
         forward_mid: 被转发的原博文 mid；None/""/"0"/0 视为非转发
         forward_content: 被转发原博文的正文内容
         extra: 其他扩展字段
@@ -52,6 +53,7 @@ class BlogItem:
     media_ids: List[str] = field(default_factory=list)
     industry_name: str = ""
     brand_values: List[str] = field(default_factory=list)
+    topic_values: List[str] = field(default_factory=list)
     forward_mid: str = ""
     forward_content: str = ""
     extra: dict = field(default_factory=dict)
@@ -93,6 +95,7 @@ class ClassifyResult:
     is_forward: bool = False
     forward_mid: str = ""
     forward_status: str = "not_forward"
+    industry_refine_note: str = ""
 
     def to_tsv_row(self) -> str:
         """转为 TSV 行格式"""

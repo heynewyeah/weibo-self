@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import logging
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -29,7 +30,7 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_DIR)
 
 from src.classifier import BlogClassifier
-from src.db_client import MidRecord, MySQLTaskRepository, TaskRecord
+from src.db_client import MidRecord, MySQLTaskRepository, TaskRecord, parse_topic_values
 from src.models import BlogItem, ClassifyResult
 from src.pipeline import ClassifyPipeline, ProcessResult
 from src.utils import extract_forward_status
@@ -121,6 +122,143 @@ class _FakeConn:
 
 
 class ProductionGuardTests(unittest.TestCase):
+    def test_food_routes_to_milk_tea_without_text_only_rejection(self):
+        cfg = minimal_config()
+        cfg["classification"]["supported_industries"] = ["汽车", "奶茶"]
+        cfg["classification"]["infer_refine_map"] = {"美食": "奶茶"}
+        classifier = BlogClassifier(cfg)
+        classifier.api_client.classify_text = MagicMock(return_value="否")
+
+        industry, note = classifier._maybe_refine_industry(
+            BlogItem(mid="m", uid="u", content="泛情绪文案", industry_name="美食"),
+            "美食",
+        )
+
+        self.assertEqual("奶茶", industry)
+        self.assertIn("品牌词、话题词、正文和媒体动态判断", note)
+        classifier.api_client.classify_text.assert_not_called()
+
+    def test_food_video_reaches_full_video_classifier(self):
+        cfg = minimal_config()
+        cfg["classification"]["supported_industries"] = ["汽车", "奶茶"]
+        cfg["classification"]["infer_refine_map"] = {"美食": "奶茶"}
+        cfg["classification"]["industry_rules"]["奶茶"] = {
+            "layers": ["品牌与社交类", "口碑体验类", "消费决策类", "其他"],
+        }
+        cfg["prompts"]["industries"]["奶茶"] = cfg["prompts"]["industries"]["汽车"]
+        classifier = BlogClassifier(cfg)
+        classifier._classify_video = MagicMock(return_value=ClassifyResult(
+            mid="5345366745549609",
+            uid="7876703713",
+            layer="品牌与社交类",
+            media_type="video_frame",
+            success=True,
+            industry_name="奶茶",
+        ))
+        item = BlogItem(
+            mid="5345366745549609",
+            uid="7876703713",
+            content="#动态品牌话题#",
+            media_ids=["1034:5345251599253522"],
+            industry_name="美食",
+            brand_values=["动态茶饮品牌"],
+            topic_values=["动态品牌话题"],
+        )
+
+        result = classifier.classify_item(item)
+
+        classifier._classify_video.assert_called_once()
+        self.assertEqual("奶茶", result.industry_name)
+        self.assertEqual("品牌与社交类", result.layer)
+
+    def test_milk_tea_prompt_uses_dynamic_brand_topic_and_content(self):
+        cfg = minimal_config()
+        cfg["classification"]["supported_industries"] = ["汽车", "奶茶"]
+        cfg["classification"]["industry_rules"]["奶茶"] = {
+            "layers": ["品牌与社交类", "口碑体验类", "消费决策类", "其他"],
+        }
+        cfg["prompts"]["industries"]["奶茶"] = {
+            "system_prompt": "dynamic",
+            "user_text_template": "品牌={brand_terms}|话题={topic_terms}|正文={content}",
+            "user_image_template": "品牌={brand_terms}|话题={topic_terms}|正文={content}",
+            "user_video_template": "品牌={brand_terms}|话题={topic_terms}|正文={content}",
+        }
+        classifier = BlogClassifier(cfg)
+        item = BlogItem(
+            mid="m",
+            uid="u",
+            content="赞美和情绪认同内容",
+            industry_name="奶茶",
+            brand_values=["动态品牌"],
+            topic_values=["动态话题"],
+        )
+
+        _, _, prompt = classifier._build_prompt_pack(item, "text")
+
+        self.assertIn("品牌=动态品牌", prompt)
+        self.assertIn("话题=动态话题", prompt)
+        self.assertIn("正文=赞美和情绪认同内容", prompt)
+
+    def test_topic_code_parser_is_dynamic_and_deduplicated(self):
+        self.assertEqual(
+            ["霸王茶姬抹茶", "代言人林一"],
+            parse_topic_values("霸王茶姬抹茶,#代言人林一#,霸王茶姬抹茶"),
+        )
+
+    def test_result_log_is_compact_and_ends_with_level_code(self):
+        cfg = minimal_config()
+        test_logger = logging.getLogger("test.compact_result_log")
+        pipeline = ClassifyPipeline(cfg, test_logger)
+        result = ProcessResult(
+            mid="5345366745549609",
+            uid="7876703713",
+            mode="auto",
+            task_id=1307727027356303361,
+            customer_id=7419005545,
+            content_preview="第一行\n第二行",
+            forward_content="原博第一行\n原博第二行",
+            pic_ids=[],
+            video_fid="1034:5345251599253522",
+            video_cover_url="https://wx3.sinaimg.cn/cover.jpg",
+            layer="其他",
+            level_code=6,
+            media_type="video",
+            success=True,
+            industry_name="奶茶",
+            source_industry_name="美食",
+            industry_refine_note="进入完整多模态分层",
+            hit_brand_name="霸王茶姬",
+            brand_terms=["霸王茶姬"],
+            topic_terms=["霸王茶姬抹茶系列"],
+            write_back=True,
+            writeback_state="applied",
+            writeback_response={
+                "data": 1, "message": "成功", "code": 0, "payload": None, "header": None,
+            },
+        )
+
+        with self.assertLogs(test_logger, level="INFO") as captured:
+            pipeline._log_result(result)
+
+        output = "\n".join(captured.output)
+        self.assertNotIn("mid=5345366745549609", output)
+        self.assertNotIn("uid=7876703713", output)
+        self.assertIn("task_id=1307727027356303361", output)
+        self.assertIn("customer_id=7419005545", output)
+        self.assertIn("品牌词=霸王茶姬", output)
+        self.assertIn("话题词=霸王茶姬抹茶系列", output)
+        self.assertIn("行业路由: 美食 → 奶茶", output)
+        self.assertIn("正文预览: 第一行 第二行", output)
+        self.assertIn("原博文mid(forward_mid): 无", output)
+        self.assertIn("原博文内容: 原博第一行 原博第二行", output)
+        self.assertIn("转发判定: not_forward", output)
+        self.assertIn("图片 pid: []", output)
+        self.assertIn("视频 fid: 1034:5345251599253522", output)
+        self.assertIn("视频封面: https://wx3.sinaimg.cn/cover.jpg", output)
+        self.assertIn("分类结果: level=6（其他）", output)
+        self.assertIn("回写响应: resp={'data': 1, 'message': '成功', 'code': 0", output)
+        self.assertTrue(captured.output[-1].endswith("└─ ✅ 处理成功 | level=6（其他）"))
+
     def test_operator_uid_routes_shard_and_parses_brand_tag(self):
         repo = MySQLTaskRepository(minimal_config()["mysql"], app_config=minimal_config())
         row = {
@@ -129,12 +267,14 @@ class ProductionGuardTests(unittest.TestCase):
             "operator_uid": 2608812381,
             "industry_tag": '{"1042001":"汽车"}',
             "brand_tag": '{"1042015:carSubBrand_x":"蔚来"}',
+            "topic_code": "蔚来发布会,乐道新车",
         }
         task = repo._row_to_task_record(row)
         self.assertIsNotNone(task)
         self.assertEqual(2608812381, task.customer_id)
         self.assertEqual("nature_ad_super_mid_1", task.shard_table)
         self.assertEqual("蔚来", task.resolve_brand_by_tag("1042015:carSubBrand_x"))
+        self.assertEqual(["蔚来发布会", "乐道新车"], task.topic_values)
 
     def test_hit_brand_exact_match_and_missing_fallback(self):
         task = TaskRecord(

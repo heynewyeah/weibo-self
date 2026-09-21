@@ -23,7 +23,7 @@
 #     --dws-runner /usr/local/bin/dws
 #
 # 行为：
-#   - 添加或更新一条带唯一标记的 cron，不影响用户其他 cron；
+#   - 添加或更新一个带唯一起止标记的 cron 配置块，不影响其他 cron；
 #   - 使用 TZ=Asia/Shanghai，固定为每天 10:00（含周末）；
 #   - 输出追加到 logs/weekly_report_cron.log；
 #   - 不保存密码或 AppSecret。
@@ -34,7 +34,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="python3"
 DWS_RUNNER="dws"
-MARKER="# intent_behavior_weekly_dingtalk_report"
+BLOCK_BEGIN="# BEGIN intent_behavior_dingtalk_report"
+BLOCK_END="# END intent_behavior_dingtalk_report"
+LEGACY_MARKER="# intent_behavior_weekly_dingtalk_report"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,16 +60,23 @@ if [[ ! -f "$PROJECT_DIR/scripts/send_weekly_report.py" ]]; then
 fi
 
 mkdir -p "$PROJECT_DIR/logs"
-CRON_TIMEZONE="CRON_TZ=Asia/Shanghai $MARKER"
-CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1 $MARKER"
+CRON_TIMEZONE="CRON_TZ=Asia/Shanghai"
+CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
 
 EXISTING="$(crontab -l 2>/dev/null || true)"
-FILTERED="$(printf '%s\n' "$EXISTING" | grep -Fv "$MARKER" || true)"
+FILTERED="$(
+  printf '%s\n' "$EXISTING" \
+    | sed "/^${BLOCK_BEGIN}$/,/^${BLOCK_END}$/d" \
+    | grep -Fv "$LEGACY_MARKER" \
+    || true
+)"
 {
   printf '%s\n' "$FILTERED"
+  printf '%s\n' "$BLOCK_BEGIN"
   printf '%s\n' "$CRON_TIMEZONE"
   printf '%s\n' "$CRON_LINE"
+  printf '%s\n' "$BLOCK_END"
 } | crontab -
 
 echo "已安装/更新 cron：每天 10:00（Asia/Shanghai）发 T-1 日报，周五/月末额外发汇总。"
-crontab -l | grep -F "$MARKER"
+crontab -l | sed -n "/^${BLOCK_BEGIN}$/,/^${BLOCK_END}$/p"

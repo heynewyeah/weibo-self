@@ -42,6 +42,7 @@ class TaskRecord:
     brand_tag_raw: str = ""
     industry_values: List[str] = field(default_factory=list)
     brand_values: List[str] = field(default_factory=list)
+    topic_values: List[str] = field(default_factory=list)
     brand_tag_map: Dict[str, str] = field(default_factory=dict)
     industry_name: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -81,6 +82,7 @@ class MidRecord:
     level: int = 0
     task_industry_name: str = ""
     task_brand_values: List[str] = field(default_factory=list)
+    task_topic_values: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def has_forward(self) -> bool:
@@ -96,6 +98,7 @@ class MidRecord:
             media_ids=_parse_media_ids(self.mid_fids),
             industry_name=self.task_industry_name,
             brand_values=list(self.task_brand_values),
+            topic_values=list(self.task_topic_values),
             forward_mid=str(self.forward_mid or ""),
             forward_content=self.forward_text or "",
             extra={
@@ -279,6 +282,7 @@ class MySQLTaskRepository:
         task_id_field = self.config.get("task_id_field", "task_id")
         industry_tag_field = self.config.get("task_industry_tag_field", "industry_tag")
         brand_tag_field = self.config.get("task_brand_tag_field", "brand_tag")
+        topic_code_field = self.config.get("task_topic_code_field", "topic_code")
         customer_id = int(row.get(customer_field, 0) or 0)
         if customer_id <= 0:
             self.logger.warning(
@@ -293,6 +297,7 @@ class MySQLTaskRepository:
         industry_values = parse_tag_json_values(industry_tag_raw)
         brand_values = parse_tag_json_values(brand_tag_raw)
         brand_tag_map = parse_tag_json_map(brand_tag_raw)
+        topic_values = parse_topic_values(row.get(topic_code_field, ""))
         industry_name = self.resolve_industry(industry_values)
 
         # 所有任务都处理，不跳过任何行业
@@ -307,6 +312,7 @@ class MySQLTaskRepository:
             brand_tag_raw=brand_tag_raw,
             industry_values=industry_values,
             brand_values=brand_values,
+            topic_values=topic_values,
             brand_tag_map=brand_tag_map,
             industry_name=industry_name,
             raw=row,
@@ -605,6 +611,7 @@ class MySQLTaskRepository:
             level=int(row.get("level", 0) or 0),
             task_industry_name=task.industry_name if task else "",
             task_brand_values=list(task.brand_values) if task else [],
+            task_topic_values=list(task.topic_values) if task else [],
             raw=row,
         )
 
@@ -656,6 +663,32 @@ def parse_tag_json_values(raw: str) -> List[str]:
     except json.JSONDecodeError:
         pass
     return []
+
+
+def parse_topic_values(raw: Any) -> List[str]:
+    """解析任务 topic_code，兼容逗号分隔字符串和 JSON 列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        values = raw
+    else:
+        text = str(raw).strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                values = parsed if isinstance(parsed, list) else [text]
+            except json.JSONDecodeError:
+                values = text.replace("，", ",").split(",")
+        else:
+            values = text.replace("，", ",").split(",")
+    result: List[str] = []
+    for value in values:
+        topic = str(value).strip().strip("#")
+        if topic and topic not in result:
+            result.append(topic)
+    return result
 
 
 def _parse_media_ids(raw: str) -> List[str]:

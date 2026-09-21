@@ -20,6 +20,7 @@
 | 待处理博文 | `nature_ad_super_mid_{operator_uid % 20}` | 查询对应任务的 `level=0` 记录 |
 | 转发上下文 | 分表字段 `forward_mid`、`forward_mid_text` | 缺少原博正文时归“其他”；正常时合并转发正文与原博正文 |
 | 品牌上下文 | 分表 `hit_mid_tag` + 任务 `brand_tag` JSON | 命中 tag 时精确解析品牌；没有命中时回退任务全部品牌词 |
+| 话题上下文 | 任务 `topic_code` | 动态解析任务话题词，与品牌词、正文和媒体共同用于分层 |
 | 博文真实内容/媒体 | mid 反解接口 | 获取正文、pid、fid、uid 等，不依赖分表中的历史正文 |
 
 `data_extractor.py` 中仍保留早期 Hive/HDFS 预演能力，但它不属于当前 MySQL 正式链路，也不能用于生产回写。
@@ -34,11 +35,12 @@ super_mid_task.operator_uid
   → 查询 level=0
   → MySQL 命名锁 + 再确认 level=0
   → mid 反解
+  → 粗行业候选路由（如美食 → 奶茶，不在此处提前丢弃）
   → 转发审查
       ├─ 原博正文缺失 / 明确异常：level=6（其他）
       └─ 正常：转发正文 + 原博正文综合分类
   → 图片下载 / 视频抽帧（视频超过 300 秒或 200MB 降级封面；仍失败降级文本）
-  → AI 分类为 level=1/2/3/6
+  → 品牌词 + 话题词 + 正文 + 图片/视频的完整 AI 分类为 level=1/2/3/6
   → HTTP update-level 回写（服务端只更新 level=0）
   → 超时或 data=0 时只读查询分表确认最终 level
   → 审计、缓存清理

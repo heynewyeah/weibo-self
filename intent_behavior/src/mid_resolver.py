@@ -114,7 +114,7 @@ class MidResolverClient:
         last_error = ""
         for attempt in range(1, self.max_retry + 1):
             try:
-                self.logger.info(
+                self.logger.debug(
                     f"[MidResolver] 请求反解 mid={mid} uid={uid or ''} (attempt {attempt})"
                 )
                 resp = requests.get(

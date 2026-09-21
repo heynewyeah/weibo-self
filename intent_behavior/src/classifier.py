@@ -7,7 +7,7 @@
 3. 调用 vLLM API 进行分类
 4. 提取分类结果并返回
 5. 支持行业感知与转发异常判断
-6. 超短内容 / 纯表情 / 纯话题标签 → 归为"其他"
+6. 纯文本的超短内容 / 纯表情 / 纯话题标签 → 归为"其他"；图片/视频仍分析媒体
 """
 
 import os
@@ -51,14 +51,8 @@ class BlogClassifier:
         self.other_label = classification_cfg.get("other_label", "其他")
         self.failure_label = classification_cfg.get("failure_label", "未识别")
         self.industry_rules = classification_cfg.get("industry_rules", {})
-        # 粗行业 -> 细行业 的轻量二分类映射（如 美食 -> 奶茶）
+        # 粗行业 -> 可执行完整多模态分层的候选行业映射（如 美食 -> 奶茶）
         self.infer_refine_map = classification_cfg.get("infer_refine_map", {})
-        self.industry_refine_max_tokens = int(classification_cfg.get("industry_refine_max_tokens", 16))
-        self.industry_refine_yes_tokens = classification_cfg.get(
-            "industry_refine_yes_tokens", ["是", "yes", "y", "1"])
-        self.industry_refine_no_tokens = classification_cfg.get(
-            "industry_refine_no_tokens", ["否", "不是", "no", "n", "0"])
-        self.industry_refine_prompt = self.prompts.get("industry_refine_prompt", "")
 
         self.image_handler = ImageHandler(
             config["media"]["image"],
@@ -90,49 +84,17 @@ class BlogClassifier:
         """判断行业是否在支持列表中"""
         return industry_name in self.supported_industries
 
-    def _parse_yes_no(self, raw: str) -> Optional[bool]:
-        """解析二分类结果：True=是 / False=否 / None=无法解析。"""
-        text = re.sub(r"[^\w\u4e00-\u9fff]", "", (raw or "")).strip().lower()
-        if not text:
-            return None
-        for token in self.industry_refine_no_tokens:
-            if text.startswith(str(token).lower()):
-                return False
-        for token in self.industry_refine_yes_tokens:
-            if text.startswith(str(token).lower()):
-                return True
-        return None
-
     def _maybe_refine_industry(self, item: BlogItem, source_industry: str) -> tuple:
         """
-        对粗行业做一次轻量二分类，细化为具体行业（如 美食 -> 奶茶）。
+        将粗行业路由到可执行完整分层的候选行业（如 美食 -> 奶茶）。
 
-        返回 (target_industry 或 None, 说明文案)。仅当粗行业在 infer_refine_map 中
-        且模型判定为“是”时才返回目标行业；判定为“否”、调用失败或输出无法解析时
-        返回 None，调用方应归为“其他”。
+        这里只路由，不再用仅看文字的二分类提前拒绝。候选行业的主分类器会
+        结合动态品牌词、话题词、博文正文及图片/视频画面，最终决定是 1/2/3 还是 6。
         """
         target = self.infer_refine_map.get(source_industry)
         if not target:
             return None, f"行业不支持: {source_industry or '空'}"
-        if not self.industry_refine_prompt:
-            return None, f"行业细化未配置提示词，归为其他: {source_industry}"
-
-        prompt = self.industry_refine_prompt.format(
-            industry=source_industry,
-            target_industry=target,
-            brand_terms=self._format_brand_terms(item),
-            content=item.content or "",
-        )
-        raw = self.api_client.classify_text(
-            "你是行业二分类判断器。", prompt, max_tokens=self.industry_refine_max_tokens)
-        if raw is None:
-            return None, f"行业细化判定调用失败，归为其他: {source_industry}"
-        decision = self._parse_yes_no(raw)
-        if decision is True:
-            return target, f"行业细化判定: 属于{target}"
-        if decision is False:
-            return None, f"行业细化判定: 不属于{target}"
-        return None, f"行业细化判定输出无法解析({raw[:40]})，归为其他"
+        return target, "进入完整多模态分层，由品牌词、话题词、正文和媒体动态判断"
 
     def _get_industry_rule(self, industry_name: str) -> Dict[str, Any]:
         return self.industry_rules.get(industry_name, self.industry_rules.get(self.default_industry, {}))
@@ -153,6 +115,10 @@ class BlogClassifier:
         return "、".join(item.brand_values) if item.brand_values else "无"
 
     @staticmethod
+    def _format_topic_terms(item: BlogItem) -> str:
+        return "、".join(item.topic_values) if item.topic_values else "无"
+
+    @staticmethod
     def _format_author_context(item: BlogItem) -> str:
         author_name = str(item.extra.get("author_name", "") or "").strip()
         return author_name or "未知"
@@ -161,6 +127,7 @@ class BlogClassifier:
         industry_name = self._resolve_industry(item)
         industry_prompts = self.prompts["industries"][industry_name]
         brand_terms = self._format_brand_terms(item)
+        topic_terms = self._format_topic_terms(item)
         author_name = self._format_author_context(item)
         content = item.content or ""
 
@@ -168,6 +135,7 @@ class BlogClassifier:
             user_prompt = industry_prompts["user_image_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                topic_terms=topic_terms,
                 author_name=author_name,
                 content=content,
             )
@@ -175,6 +143,7 @@ class BlogClassifier:
             user_prompt = industry_prompts["user_video_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                topic_terms=topic_terms,
                 author_name=author_name,
                 content=content,
             )
@@ -182,6 +151,7 @@ class BlogClassifier:
             user_prompt = industry_prompts["user_text_template"].format(
                 industry=industry_name,
                 brand_terms=brand_terms,
+                topic_terms=topic_terms,
                 author_name=author_name,
                 content=content,
             )
@@ -202,10 +172,12 @@ class BlogClassifier:
 
         industry_name = self._resolve_industry(item)
         brand_terms = self._format_brand_terms(item)
+        topic_terms = self._format_topic_terms(item)
         author_name = self._format_author_context(item)
         prompt = self.prompts["forward_review_prompt"].format(
             industry=industry_name,
             brand_terms=brand_terms,
+            topic_terms=topic_terms,
             author_name=author_name,
             content=item.content or "",
             forward_content=item.forward_content or "",
@@ -301,17 +273,20 @@ class BlogClassifier:
 
         media_type = self.detect_media_type(item)
         industry_name = self._resolve_industry(item)
+        industry_refine_note = ""
 
-        # 行业不支持时，先尝试粗行业 -> 细行业的轻量二分类（如 美食 -> 奶茶）
+        # 粗行业先路由到可执行完整多模态分层的候选行业（如 美食 -> 奶茶）。
+        # 不在图片/视频分析前用纯文本二分类提前丢弃博文。
         if not self._is_supported_industry(industry_name):
             refined, refine_note = self._maybe_refine_industry(item, industry_name)
+            industry_refine_note = refine_note
             if refined:
-                self.logger.info(
+                self.logger.debug(
                     "行业细化: %s -> %s mid=%s", industry_name, refined, item.mid)
                 industry_name = refined
                 item.industry_name = refined
             else:
-                self.logger.info(
+                self.logger.debug(
                     "行业不支持，归为其他 mid=%s industry=%s note=%s",
                     item.mid, industry_name or '空', refine_note,
                 )
@@ -327,9 +302,10 @@ class BlogClassifier:
                     is_forward=item.has_forward(),
                     forward_mid=item.forward_mid,
                     forward_status="not_forward",
+                    industry_refine_note=industry_refine_note,
                 )
 
-        self.logger.info(
+        self.logger.debug(
             f"开始分类 mid={item.mid} uid={item.uid} industry={industry_name} type={media_type} forward={item.has_forward()}"
         )
 
@@ -348,6 +324,7 @@ class BlogClassifier:
                     is_forward=item.has_forward(),
                     forward_mid=item.forward_mid,
                     forward_status="failed",
+                    industry_refine_note=industry_refine_note,
                 )
                 self._persist_result(result)
                 return result
@@ -364,6 +341,7 @@ class BlogClassifier:
                     is_forward=True,
                     forward_mid=item.forward_mid,
                     forward_status=forward_status,
+                    industry_refine_note=industry_refine_note,
                 )
                 self._persist_result(result)
                 return result
@@ -372,9 +350,10 @@ class BlogClassifier:
             if item.has_forward() and forward_status == "normal":
                 item.content = self._compose_forward_content(item)
 
-            # 非转发文本，或合并后的转发文本无意义，归为其他。
-            if self._is_trivial_content(item.content):
-                self.logger.info(f"内容过短或无意义 mid={item.mid}，归为其他")
+            # 只有纯文本在文字无意义时直接归其他。图片/视频博文即使只有话题标签
+            # 或短文案，也必须继续分析媒体，避免丢失品牌露出素材。
+            if media_type == MediaType.TEXT and self._is_trivial_content(item.content):
+                self.logger.debug(f"内容过短或无意义 mid={item.mid}，归为其他")
                 result = ClassifyResult(
                     mid=item.mid,
                     uid=item.uid,
@@ -387,6 +366,7 @@ class BlogClassifier:
                     is_forward=item.has_forward(),
                     forward_mid=item.forward_mid,
                     forward_status=forward_status,
+                    industry_refine_note=industry_refine_note,
                 )
                 self._persist_result(result)
                 return result
@@ -402,6 +382,7 @@ class BlogClassifier:
             result.is_forward = item.has_forward()
             result.forward_mid = item.forward_mid
             result.forward_status = forward_status
+            result.industry_refine_note = industry_refine_note
 
         except Exception as e:
             self.logger.exception(f"分类异常 mid={item.mid}: {e}")
@@ -539,7 +520,7 @@ class BlogClassifier:
 
     def _classify_video(self, item: BlogItem) -> ClassifyResult:
         if not self.video_handler.enabled:
-            self.logger.info(f"视频处理未启用 mid={item.mid}，退化为纯文本分类")
+            self.logger.debug(f"视频处理未启用 mid={item.mid}，退化为纯文本分类")
             result = self._classify_text(item)
             result.media_type = "video_fallback_text"
             return result
@@ -547,7 +528,7 @@ class BlogClassifier:
         # 策略：先尝试 frame（抽帧），失败则降级为 cover（封面图）
         image_paths = []
         used_mode = "frame"
-        self.logger.info(f"视频处理: 先尝试 frame 模式, mid={item.mid}")
+        self.logger.debug(f"视频处理: 先尝试 frame 模式, mid={item.mid}")
 
         for media_id in (item.media_ids or []):
             paths = self.video_handler.process_video(media_id, mode="frame")
@@ -614,7 +595,7 @@ class BlogClassifier:
 
     def _persist_result(self, result: ClassifyResult):
         if result.success:
-            self.logger.info(
+            self.logger.debug(
                 f"分类完成 mid={result.mid} industry={result.industry_name} layer={result.layer} "
                 f"forward_status={result.forward_status}"
             )

@@ -54,7 +54,7 @@ class LevelUpdateClient:
         last_error = ""
         for attempt in range(1, self.max_retry + 1):
             try:
-                self.logger.info(
+                self.logger.debug(
                     f"[LevelUpdate] 回写 level mid={mid} customer_id={customer_id} "
                     f"task_id={task_id} level={level} (attempt {attempt})"
                 )
@@ -68,7 +68,7 @@ class LevelUpdateClient:
                 data = resp.json()
                 if not isinstance(data, dict):
                     raise RuntimeError(f"回写接口响应不是 JSON 对象: {data!r}")
-                self.logger.info(f"[LevelUpdate] 回写成功 mid={mid} resp={data}")
+                self.logger.debug(f"[LevelUpdate] 回写成功 mid={mid} resp={data}")
                 return data
 
             except requests.exceptions.Timeout:

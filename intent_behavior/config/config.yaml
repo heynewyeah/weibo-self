@@ -37,12 +37,10 @@ classification:
   pending_level: 0
   other_label: "其他"
   failure_label: "未识别"
-  # 粗行业 -> 细行业 的轻量二分类：命中粗行业时，用一次短推理判断是否属于目标细行业。
+  # 粗行业 -> 候选细行业路由。不在此处用文字二分类提前丢弃博文；
+  # 后续由目标行业的主分类器结合品牌词、话题词、正文和媒体内容动态判断。
   infer_refine_map:
     美食: 奶茶
-  industry_refine_max_tokens: 16
-  industry_refine_yes_tokens: ["是", "yes", "y", "1"]
-  industry_refine_no_tokens: ["否", "不是", "no", "n", "0"]
   industry_rules:
     汽车:
       layers:
@@ -129,6 +127,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文内容：
@@ -140,6 +139,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文文字内容：
@@ -153,6 +153,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文文字内容：
@@ -178,16 +179,19 @@ prompts:
         【其他】— 不符合以上三类目标层级的内容，或者内容与奶茶营销分层目标无明显关联。
 
         分类原则：
-        1. 优先判断内容的核心目的：传播扩散→品牌与社交类；体验评价→口碑体验类；购买动机→消费决策类。
-        2. 如果同时涉及多个层级，按最深层级归类。
-        3. 如果内容不符合前三类目标，请归为【其他】。
-        4. 直接输出分类结果，不要输出分析过程。
-        5. 输出格式必须是：最终分类结果：【层级名称】
+        1. 这是广告主自然博文打捞和素材分层场景，优先保留对品牌传播有价值的博文，不要把“没有产品细节”等同于无关。
+        2. 必须动态结合任务品牌词、任务话题词、博文文字、发博账号和已附媒体画面；任务词只是上下文，不是固定答案。
+        3. 若博文明确围绕任务品牌/话题，呈现赞美、支持、情绪认同、明星代言讨论、话题参与、品牌露出或扩散意愿，即使没有产品口味或购买细节，也应归为【品牌与社交类】。
+        4. 体验评价→口碑体验类；优惠、下单、怎么点、值不值得买等决策信息→消费决策类。
+        5. 如果同时涉及多个层级，按最深层级归类。
+        6. 只有当文字和媒体的核心主题都与任务品牌/话题及奶茶营销明显无关，或仅是偶然字面出现时，才归为【其他】。
+        7. 直接输出分类结果，不要输出分析过程。输出格式必须是：最终分类结果：【层级名称】
       user_text_template: |
         请对以下奶茶行业博文进行营销分层分类。
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文内容：
@@ -199,6 +203,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文文字内容：
@@ -212,6 +217,7 @@ prompts:
 
         行业：{industry}
         品牌词：{brand_terms}
+        话题词：{topic_terms}
         发博账号：{author_name}
 
         博文文字内容：
@@ -225,6 +231,7 @@ prompts:
 
     行业：{industry}
     品牌词：{brand_terms}
+    话题词：{topic_terms}
     转发账号：{author_name}
 
     转发博文内容：
@@ -247,20 +254,6 @@ prompts:
     输出要求（不要输出解释）：
     - 如果存在上述异常情况，输出：转发判定：【异常】
     - 如果不存在上述异常情况，输出：转发判定：【正常】
-
-  industry_refine_prompt: |
-    请判断下面这条博文是否属于「{target_industry}」行业。
-
-    判断依据：内容是否围绕{target_industry}品牌、产品、口味、门店、代言人活动、上新测评、
-    购买体验、行业动态等展开。如果只是顺带提到相关字眼、但主体并非{target_industry}，
-    请判「否」。
-
-    品牌词：{brand_terms}
-
-    博文内容：
-    {content}
-
-    请只输出一个词：是 或 否
 
 # 图片媒体配置
 media:
@@ -337,6 +330,7 @@ mysql:
   task_customer_id_field: "operator_uid"
   task_industry_tag_field: "industry_tag"
   task_brand_tag_field: "brand_tag"
+  task_topic_code_field: "topic_code"
   task_end_time_field: "end_time"
   shard_task_match_field: "super_task_id"
   shard_forward_mid_field: "forward_mid"
