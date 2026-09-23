@@ -100,7 +100,7 @@ python3 worker.py --config config/config.yaml --once
 # 具体安装、启停、看日志方法见 docs/production_runbook.md
 ```
 
-默认 worker 行为：持续查询有效任务 → 处理 `level=0` → 回写 → 等待 10 秒 → 下一轮。`--once` 只运行一轮后退出。
+默认 worker 行为：持续查询有效任务 → 处理 `level=0` → 回写 → 等待 10 秒 → 下一轮。空轮询不输出逐任务日志或审计汇总，每 30 分钟输出一条空闲心跳（由 `worker.idle_heartbeat_sec` 配置）；有待处理记录时照常输出处理过程与汇总，错误和告警仍立即输出。`--once` 只运行一轮后退出，并打印本轮汇总。
 
 更完整的运行说明见 [docs/production_runbook.md](docs/production_runbook.md)。
 

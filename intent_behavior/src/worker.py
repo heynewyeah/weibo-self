@@ -92,23 +92,12 @@ class MySQLShardWorker:
             "skipped": 0,
         }
 
-        self.logger.info("")
-        self.logger.info("#" * 80)
-        self.logger.info(f"# 第 {self.stats.loops} 轮轮询开始")
-        self.logger.info("#" * 80)
-
         # 任务读取只占用短事务。后续网络 I/O（反解/下载/模型/回写）不持有数据库行锁。
         with self.repo.connect() as conn:
             tasks = self.repo.fetch_active_tasks(conn, limit=active_task_limit)
 
         self.stats.task_count += len(tasks)
         loop_summary["tasks"] = len(tasks)
-
-        if not tasks:
-            self.logger.info("未发现有效任务，结束本轮轮询")
-            return loop_summary
-
-        self.logger.info(f"发现 {len(tasks)} 个有效任务")
 
         for task_idx, task in enumerate(tasks, 1):
             task_summary = self._process_task(task, batch_limit, task_idx, len(tasks))
@@ -117,21 +106,24 @@ class MySQLShardWorker:
             loop_summary["fallback"] += task_summary["fallback"]
             loop_summary["fail"] += task_summary["fail"]
             loop_summary["skipped"] += task_summary["skipped"]
-            self.pipeline.audit.record_task_summary(task, task_summary)
+            if task_summary["pending"]:
+                self.pipeline.audit.record_task_summary(task, task_summary)
 
-        self.logger.info("")
-        self.logger.info(f"第 {self.stats.loops} 轮轮询完成: "
-                         f"任务数={loop_summary['tasks']} "
-                         f"记录数={loop_summary['pending']} "
-                         f"成功={loop_summary['success']} "
-                         f"兜底={loop_summary['fallback']} "
-                         f"失败={loop_summary['fail']} "
-                         f"跳过={loop_summary['skipped']}")
+        if loop_summary["pending"]:
+            self.logger.info("")
+            self.logger.info(f"第 {self.stats.loops} 轮轮询完成: "
+                             f"任务数={loop_summary['tasks']} "
+                             f"记录数={loop_summary['pending']} "
+                             f"成功={loop_summary['success']} "
+                             f"兜底={loop_summary['fallback']} "
+                             f"失败={loop_summary['fail']} "
+                             f"跳过={loop_summary['skipped']}")
 
         return loop_summary
 
     def run_forever(self) -> None:
         poll_interval = float(self.worker_cfg.get("poll_interval_sec", 10))
+        idle_heartbeat_sec = max(0.0, float(self.worker_cfg.get("idle_heartbeat_sec", 1800)))
         max_loops = int(self.worker_cfg.get("max_loops", 0))
         daily_reset = bool(self.worker_cfg.get("daily_reset", True))
         day_started = date.today()
@@ -139,16 +131,19 @@ class MySQLShardWorker:
         self.logger.info("MySQL 分表 worker 启动")
         self.logger.info(
             "配置: poll_interval=%ss fetch_limit_per_task=%s active_task_limit=%s "
-            "daily_reset=%s single_instance=%s",
+            "idle_heartbeat_sec=%s daily_reset=%s single_instance=%s",
             poll_interval,
             self.worker_cfg.get("fetch_limit_per_task", 100),
             self.worker_cfg.get("active_task_limit", 50),
+            idle_heartbeat_sec,
             daily_reset,
             bool(self.worker_cfg.get("single_instance", False)),
         )
 
         lock_fd = self._acquire_instance_lock()
         loop_idx = 0
+        idle_loops = 0
+        last_report_at = time.monotonic()
         try:
             while True:
                 if daily_reset:
@@ -160,12 +155,28 @@ class MySQLShardWorker:
                         self.logger.info("进入新的一天（%s），轮询计数已重置", today)
                 loop_idx += 1
                 try:
-                    self.run_once()
+                    summary = self.run_once()
+                    if summary["pending"]:
+                        idle_loops = 0
+                        last_report_at = time.monotonic()
+                    else:
+                        idle_loops += 1
+                        now = time.monotonic()
+                        if idle_heartbeat_sec and now - last_report_at >= idle_heartbeat_sec:
+                            self.logger.info(
+                                "空闲心跳: 最近 %s 轮无待处理记录，当前有效任务数=%s，worker 仍在运行",
+                                idle_loops,
+                                summary["tasks"],
+                            )
+                            idle_loops = 0
+                            last_report_at = now
                 except KeyboardInterrupt:
                     self.logger.info("收到中断信号，worker 退出")
                     break
                 except Exception as exc:
                     self.logger.exception("worker 轮询异常: %s", exc)
+                    idle_loops = 0
+                    last_report_at = time.monotonic()
 
                 if max_loops > 0 and loop_idx >= max_loops:
                     self.logger.info("达到最大轮询次数 max_loops=%s，退出", max_loops)
@@ -180,15 +191,6 @@ class MySQLShardWorker:
 
     def _process_task(self, task: TaskRecord, batch_limit: int,
                       task_idx: int, total_tasks: int) -> Dict[str, int]:
-        self.logger.info("")
-        self.logger.info("-" * 80)
-        self.logger.info(f"任务 [{task_idx}/{total_tasks}] "
-                         f"task_id={task.task_id} "
-                         f"customer_id={task.customer_id} "
-                         f"industry={task.industry_name} "
-                         f"shard={task.shard_table}")
-        self.logger.info("-" * 80)
-
         # 仅作短时间只读拉取；真正处理前会用命名锁互斥并再次检查 level=0。
         with self.repo.connect() as conn:
             pending_records = self.repo.fetch_pending_mids(
@@ -205,9 +207,16 @@ class MySQLShardWorker:
         self.stats.pending_count += len(pending_records)
 
         if not pending_records:
-            self.logger.info(f"  └─ 无待处理记录")
             return task_summary
 
+        self.logger.info("")
+        self.logger.info("-" * 80)
+        self.logger.info(f"任务 [{task_idx}/{total_tasks}] "
+                         f"task_id={task.task_id} "
+                         f"customer_id={task.customer_id} "
+                         f"industry={task.industry_name} "
+                         f"shard={task.shard_table}")
+        self.logger.info("-" * 80)
         self.logger.info(f"  └─ 待处理记录数: {len(pending_records)}")
 
         for record_idx, record in enumerate(pending_records, 1):
