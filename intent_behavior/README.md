@@ -177,7 +177,7 @@ bash scripts/install_weekly_report_cron.sh \
 
 | 项 | 值 |
 | --- | --- |
-| 接口地址 | `config/config.yaml` 的 `api.url`：`http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions` |
+| 接口地址 | `config/config.yaml` 的 `api.url`：`http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions` |
 | 协议 | KServe v2（`.../v2/models/llm` 提供模型元信息，chat 走末尾 `/chat/completions`） |
 | 服务端模型名 | `qwen36-35b-a3b-fp8`（请求体里的 `model` 字段会被网关覆盖，填旧路径也能用） |
 | 关闭思考 | `thinking: {type: "disabled"}`（顶层 `enable_thinking: false` 也可） |

@@ -12,7 +12,7 @@
 | 部署模型名 | `qwen36-35b-a3b-fp8`（网关返回的模型名，FP8 量化部署） |
 | 模型类型 | MoE（混合专家），支持文本 + 多模态（图片） |
 | 推理框架 | vLLM，前面挂 KServe v2 网关（llm-beixian） |
-| API 地址 | `http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions` |
+| API 地址 | `http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions` |
 | API 协议 | KServe v2 chat 扩展（`.../v2/models/llm/chat/completions`），请求体兼容 OpenAI 风格 |
 | 模型元信息 | `GET .../v2/models/llm` 可查看输入输出项（text / reasoning_text / tokens / finish_reason 等） |
 | 备份地址 | 旧直连 vLLM（`:8087/v1/chat/completions`），切换方式见项目 `config/config.yaml` 的注释 |
@@ -23,7 +23,7 @@
 
 ```yaml
 api:
-  url: "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+  url: "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
   model: "qwen36-35b-a3b-fp8"
   max_tokens: 512              # 分类任务只需 128~512
   temperature: 0.0             # 保证确定性/一致性（必须为 0）
@@ -63,7 +63,7 @@ api:
 ```python
 import requests
 
-url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
 
 payload = {
     "model": "qwen36-35b-a3b-fp8",
@@ -91,7 +91,7 @@ print(output)
 ### 3.2 curl 示例
 
 ```bash
-curl -X POST "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions" \
+curl -X POST "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen36-35b-a3b-fp8",
@@ -118,7 +118,7 @@ curl -X POST "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a
 import requests
 import base64
 
-url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
 
 # 读取图片并转 base64
 with open("image.jpg", "rb") as f:
@@ -223,7 +223,7 @@ import time
 import requests
 
 def call_model(payload, max_retry=3, retry_backoff_base=2, timeout=60):
-    url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+    url = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
     
     for attempt in range(1, max_retry + 1):
         try:
@@ -303,7 +303,7 @@ def call_model(payload, max_retry=3, retry_backoff_base=2, timeout=60):
 
 import requests
 
-URL = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+URL = "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
 MODEL = "qwen36-35b-a3b-fp8"
 
 def classify(text: str) -> str:

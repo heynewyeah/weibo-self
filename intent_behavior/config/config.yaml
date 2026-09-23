@@ -7,7 +7,7 @@
 #   当前启用：KServe 网关（llm-beixian），实测可用参数见下方注释
 #   备份方案：旧直连 vLLM（:8087），切换时启用上面两行注释里的 url/model 并放开 reasoning/enable_thinking
 api:
-  url: "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+  url: "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
   # [备份-旧直连 vLLM，切换时启用] url: "http://10.1.126.27:8087/v1/chat/completions"
   model: "qwen36-35b-a3b-fp8"
   # [备份-旧直连 vLLM，切换时启用] model: "/data0/yongsheng/rsync/Qwen3.6-35B/Qwen3.6-35B-A3B"

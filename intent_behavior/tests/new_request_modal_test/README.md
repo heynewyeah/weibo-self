@@ -5,7 +5,7 @@
 当前接口（`config/config.yaml` 的 `api.url`）：
 
 ```
-http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions
+http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions
 ```
 
 | 项 | 说明 |

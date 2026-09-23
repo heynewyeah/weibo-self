@@ -50,7 +50,7 @@ import yaml
 
 DEFAULT_NEW_URL = (
     "http://llm-beixian.multimedia.wml.weibo.com/mm-wb-ads/"
-    "qwen36-35b-a3b-ads-fst-6aaa4019/v2/models/llm/chat/completions"
+    "qwen36-35b-a3b-ads-fst-6ab34420/v2/models/llm/chat/completions"
 )
 
 PING_SYSTEM = "你是模型服务连通性检测器。"
