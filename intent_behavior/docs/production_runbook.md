@@ -201,6 +201,8 @@ python3 scripts/cleanup_mysql_audit.py --execute
 
 ## 排障
 
+按错误阶段定位、修改和手动复测单条 case 的完整步骤见 [holiday_troubleshooting.md](holiday_troubleshooting.md)。
+
 - 回写超时：不要立刻认定失败。worker 会查询分表确认是否已从 level=0 写为目标 level。
 - `data=0`：同样查询最终 level。目标 level 已存在则是幂等成功；否则算失败。
 - 反解/模型失败：查对应 `run_id` 的 JSONL 中 `error_stage`、`error` 和 `model_output`。
