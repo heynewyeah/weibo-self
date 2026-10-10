@@ -132,6 +132,19 @@ python3 scripts/cleanup_mysql_audit.py --execute
 - 每周五额外、单独发送当周周一至周五的周汇总；
 - 每月最后一天额外、单独发送当月 1 日至当天的月汇总。
 
+统计时扫描所有保留的审计日期目录，以每条记录的 `event_time`（Asia/Shanghai）决定是否进入窗口及归属哪一天。长期 worker 的目录是启动日期，跨天记录仍可能写在旧目录，不再按目录日期过滤。无时区的历史时间按北京时间解释；缺少时间的旧记录兼容使用目录日期，时间格式损坏的记录告警并跳过。门户 JSON 聚合复用相同读取逻辑。
+
+更新报告脚本后，下一次 cron 会自动使用新逻辑，无需重启 worker 或重装 cron；无需迁移旧审计文件或重新分类。补发某天日报时，`--run-date` 应为报告日期的下一天，并使用 `--period daily` 避免额外发送周/月汇总。例如补发 2026-10-09：
+
+```bash
+# 只预览，不发送
+python3 scripts/send_weekly_report.py --period daily --run-date 2026-10-10 --dry-run
+
+# 真实发送一条日报；重复执行会重复发送
+DWS_RUNNER=/usr/home/ads_fst/.local/bin/dws \
+  python3 scripts/send_weekly_report.py --period daily --run-date 2026-10-10
+```
+
 可以按明确日期范围手工生成报告：
 
 ```bash

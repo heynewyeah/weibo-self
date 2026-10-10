@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from datetime import date
 from pathlib import Path
 
@@ -30,6 +32,95 @@ SPEC.loader.exec_module(weekly_report)
 
 
 class WeeklyReportTests(unittest.TestCase):
+    def write_events(self, root, folder, events):
+        day_dir = root / folder
+        day_dir.mkdir(exist_ok=True)
+        (day_dir / "worker.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_daily_report_finds_314_successes_in_worker_startup_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            events = [
+                {"event": "run_started", "event_time": "2026-09-28T10:00:00", "run_id": "r1"},
+                {"event": "mid_processed", "event_time": "2026-10-08T23:59:59", "run_id": "r1", "status": "failed"},
+                {"event": "mid_processed", "event_time": "2026-10-10T00:00:00", "run_id": "r1", "status": "fallback"},
+            ] + [
+                {"event": "mid_processed", "event_time": "2026-10-09T16:30:51", "run_id": "r1", "status": "success", "mid": str(index)}
+                for index in range(314)
+            ]
+            self.write_events(root, "20260928", events)
+            day = date(2026, 10, 9)
+            selected = list(weekly_report.iter_events(root, day, day))
+            self.assertEqual(314, len(selected))
+            self.assertEqual({"2026-10-09"}, {event["_audit_day"] for event in selected})
+            report = weekly_report.build_report(selected, day, day, root, "日报")
+            self.assertIn("- 处理尝试：314\n", report)
+            self.assertIn("- 正常分类 success：314（100.0%）", report)
+            self.assertIn("- 运行实例：1\n", report)
+            self.assertIn("- 2026-10-09：314 条｜success 314", report)
+            startup_day = date(2026, 9, 28)
+            startup_events = list(weekly_report.iter_events(root, startup_day, startup_day))
+            self.assertEqual(["run_started"], [event["event"] for event in startup_events])
+
+    def test_weekly_and_monthly_reports_use_event_dates_for_totals_and_trends(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_events(root, "20260928", [
+                {"event": "mid_processed", "event_time": f"{day}T12:00:00", "status": "success"}
+                for day in ("2026-09-30", "2026-10-01", "2026-10-05", "2026-10-09", "2026-10-10")
+            ])
+            for start, end, name, expected in (
+                (date(2026, 10, 5), date(2026, 10, 9), "周汇总", 2),
+                (date(2026, 10, 1), date(2026, 10, 9), "月汇总", 3),
+            ):
+                with self.subTest(name=name):
+                    report = weekly_report.build_report(
+                        weekly_report.iter_events(root, start, end), start, end, root, name
+                    )
+                    self.assertIn(f"- 处理尝试：{expected}\n", report)
+                    self.assertIn("- 2026-10-09：1 条｜success 1", report)
+                    self.assertIn("- 2026-10-05：1 条｜success 1", report)
+
+    def test_timezone_offsets_and_midnight_boundaries_use_shanghai_date(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            timestamps = [
+                "2026-10-08T15:59:59Z",   # 北京时间 10.08
+                "2026-10-08T16:00:00Z",   # 北京时间 10.09 零点
+                "2026-10-09T15:59:59+00:00",
+                "2026-10-09T16:00:00+00:00",  # 北京时间 10.10 零点
+                "2026-10-09T00:00:00+08:00",
+                "2026-10-09T23:59:59",   # 无偏移的历史时间视为北京时间
+                "2026-10-10T00:00:00",
+            ]
+            self.write_events(root, "20260928", [
+                {"event": "mid_processed", "event_time": timestamp, "status": "success"}
+                for timestamp in timestamps
+            ])
+            day = date(2026, 10, 9)
+            selected = list(weekly_report.iter_events(root, day, day))
+            self.assertEqual(timestamps[1:3] + timestamps[4:6], [event["event_time"] for event in selected])
+            self.assertEqual({"2026-10-09"}, {event["_audit_day"] for event in selected})
+
+    def test_missing_event_time_falls_back_but_invalid_time_is_not_misdated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_events(root, "20261009", [
+                {"event": "mid_processed", "status": "success"},
+                {"event": "mid_processed", "event_time": None, "status": "fallback"},
+                {"event": "mid_processed", "event_time": "broken", "status": "failed"},
+                {"event": "mid_processed", "event_time": 123, "status": "failed"},
+            ])
+            day = date(2026, 10, 9)
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                selected = list(weekly_report.iter_events(root, day, day))
+            self.assertEqual(["success", "fallback"], [event["status"] for event in selected])
+            self.assertIn("event_time", stderr.getvalue())
+
     def test_report_aggregates_structured_audit_events(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

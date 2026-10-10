@@ -6,6 +6,8 @@
   logs/runs/YYYYMMDD/<run_id>.jsonl
   该文件由 src/audit.py 在每个 mid 处理结束时写入。脚本不连接 MySQL、
   不调用模型、不回写 level，因此可以安全地在正式环境定时运行。
+  扫描所有保留的日期目录，按 event_time 的北京时间筛选，而非按目录日期筛选。
+  长期 worker 的目录是启动日期，不能代表其中每条记录的实际处理日期。
 
 统计内容：
   - 处理量、去重 mid 数、success / fallback / failed / interrupted；
@@ -47,10 +49,12 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_AUDIT_DIR = PROJECT_DIR / "logs" / "runs"
+REPORT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +110,7 @@ def parse_date(value: str, option_name: str, default: Optional[date] = None) -> 
 
 def parse_end_date(value: str) -> date:
     if not value:
-        return datetime.now().date()
+        return datetime.now(REPORT_TIMEZONE).date()
     return parse_date(value, "--end-date")
 
 
@@ -125,7 +129,22 @@ def explicit_date_range(start_value: str, end_day: date, days: int) -> Tuple[dat
     return start_day, end_day
 
 
+def audit_event_day(event: Dict[str, Any], directory_day: date) -> date:
+    """无偏移的历史时间按北京时间解释；仅缺少时间时回退到目录日期。"""
+    value = event.get("event_time")
+    if value is None or value == "":
+        return directory_day
+    if not isinstance(value, str):
+        raise ValueError("event_time 必须为 ISO 时间字符串")
+    # Python 3.10 的 fromisoformat 尚不支持 Z；服务器需兼容该版本。
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=REPORT_TIMEZONE)
+    return timestamp.astimezone(REPORT_TIMEZONE).date()
+
+
 def iter_events(audit_dir: Path, start_day: date, end_day: date) -> Iterable[Dict[str, Any]]:
+    """目录仅用于发现文件；_audit_day 是实际事件的北京时间日期。"""
     if not audit_dir.is_dir():
         return
     for day_dir in sorted(audit_dir.iterdir()):
@@ -135,8 +154,7 @@ def iter_events(audit_dir: Path, start_day: date, end_day: date) -> Iterable[Dic
             day = datetime.strptime(day_dir.name, "%Y%m%d").date()
         except ValueError:
             continue
-        if day < start_day or day > end_day:
-            continue
+        # 不按目录日期跳过：早期启动的 worker 文件可能含有统计窗口内的记录。
         for path in sorted(day_dir.glob("*.jsonl")):
             try:
                 with path.open("r", encoding="utf-8") as handle:
@@ -153,7 +171,17 @@ def iter_events(audit_dir: Path, start_day: date, end_day: date) -> Iterable[Dic
                             )
                             continue
                         if isinstance(event, dict):
-                            event["_audit_day"] = day.isoformat()
+                            try:
+                                event_day = audit_event_day(event, day)
+                            except ValueError:
+                                print(
+                                    f"[WARN] 跳过无效 event_time: {path}:{line_no}",
+                                    file=sys.stderr,
+                                )
+                                continue
+                            if event_day < start_day or event_day > end_day:
+                                continue
+                            event["_audit_day"] = event_day.isoformat()
                             event["_audit_file"] = str(path)
                             yield event
             except OSError as exc:
@@ -352,7 +380,8 @@ def build_report(
         f"（使用率 {disk.used / disk.total * 100:.1f}%）",
         "",
         "> 口径说明：success 为正常分类并回写；fallback 为处理异常但已按业务规则回写 level=6；"
-        "failed 为未闭环失败；interrupted 为人工 Ctrl+C 中止，mid 应保持 level=0。",
+        "failed 为未闭环失败；interrupted 为人工 Ctrl+C 中止，mid 应保持 level=0。"
+        "统计日期按 event_time 转为 Asia/Shanghai；缺少时间的旧记录使用目录日期。",
     ])
     return "\n".join(lines) + "\n"
 
