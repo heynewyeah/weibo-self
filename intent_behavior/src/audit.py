@@ -14,6 +14,7 @@ import logging
 import os
 import socket
 import time
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -44,7 +45,7 @@ class RunAudit:
         raw_dir = cfg.get("dir", "logs/runs")
         self.base_dir = raw_dir if os.path.isabs(raw_dir) else os.path.join(project_dir, raw_dir)
         now = datetime.now()
-        self.run_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        self.run_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{uuid.uuid4().hex[:12]}"
         self.started_at = now
         self.path = ""
         self.summary_path = ""

@@ -10,6 +10,24 @@ cd "$PROJECT_DIR"
 
 export TZ=Asia/Shanghai
 export PYTHONUNBUFFERED=1
+export DATAWORKS_MAX_LOOP_ERRORS="${DATAWORKS_MAX_LOOP_ERRORS:-3}"
 
-# 不使用 --once、nohup 或后台运行，保证 Dataworks 跟踪实际 worker 进程。
-exec "${PYTHON_BIN:-python3}" -u worker.py --config config/config.yaml
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+export PYTHONNOUSERSITE=1
+case "${1:-}" in
+  --check)
+    exec "$PYTHON_BIN" scripts/dataworks_runtime_check.py ;;
+  --preflight)
+    exec "$PYTHON_BIN" scripts/production_preflight.py --strict ;;
+  --once)
+    exec "$PYTHON_BIN" -u worker.py --config config/config.yaml --once ;;
+  "") ;;
+  *) echo 'Usage: bash run_dataworks.sh [--check|--preflight|--once]' >&2; exit 2 ;;
+esac
+
+"$PYTHON_BIN" scripts/dataworks_runtime_check.py
+# Dataworks 临时目录会被清理：由前台监督进程定期保存日志并转发终止信号。
+if [ -n "${DATAWORKS_LOG_HDFS:-}" ]; then
+  exec "$PYTHON_BIN" -u scripts/dataworks_supervisor.py
+fi
+exec "$PYTHON_BIN" -u worker.py --config config/config.yaml

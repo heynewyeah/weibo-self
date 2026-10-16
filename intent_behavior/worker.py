@@ -28,6 +28,7 @@
 
 import argparse
 import os
+import signal
 import sys
 import yaml
 
@@ -35,6 +36,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.worker import create_worker
 from src.utils import setup_logger
+
+
+def interrupt_on_termination(_signum, _frame):
+    """容器停止时走现有的中断审计和资源清理路径。"""
+    raise KeyboardInterrupt
 
 
 def load_config(config_path: str) -> dict:
@@ -55,8 +61,13 @@ def main():
         help="仅执行一轮查询、处理和回写后退出（首次上线建议先使用）",
     )
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, interrupt_on_termination)
 
     config = load_config(args.config)
+    if os.environ.get("DATAWORKS_MAX_LOOP_ERRORS"):
+        config.setdefault("worker", {})["max_consecutive_loop_errors"] = max(
+            1, int(os.environ["DATAWORKS_MAX_LOOP_ERRORS"])
+        )
     logger = setup_logger(
         name="mysql_worker",
         log_dir=config.get("logging", {}).get("dir", "logs"),

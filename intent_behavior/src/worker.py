@@ -125,6 +125,8 @@ class MySQLShardWorker:
         poll_interval = float(self.worker_cfg.get("poll_interval_sec", 10))
         idle_heartbeat_sec = max(0.0, float(self.worker_cfg.get("idle_heartbeat_sec", 1800)))
         max_loops = int(self.worker_cfg.get("max_loops", 0))
+        max_errors = max(0, int(self.worker_cfg.get("max_consecutive_loop_errors", 0)))
+        consecutive_errors = 0
         daily_reset = bool(self.worker_cfg.get("daily_reset", True))
         day_started = date.today()
 
@@ -156,6 +158,7 @@ class MySQLShardWorker:
                 loop_idx += 1
                 try:
                     summary = self.run_once()
+                    consecutive_errors = 0
                     if summary["pending"]:
                         idle_loops = 0
                         last_report_at = time.monotonic()
@@ -175,6 +178,10 @@ class MySQLShardWorker:
                     break
                 except Exception as exc:
                     self.logger.exception("worker 轮询异常: %s", exc)
+                    consecutive_errors += 1
+                    if max_errors and consecutive_errors >= max_errors:
+                        self.logger.error("连续 %s 轮查询异常，退出以便调度平台发现并重新调起", consecutive_errors)
+                        raise
                     idle_loops = 0
                     last_report_at = time.monotonic()
 

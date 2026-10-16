@@ -12,3 +12,5 @@ intent_behavior/logs/
 # 本地媒体缓存与兼容调试结果。
 intent_behavior/output/.cache/
 intent_behavior/output/result.tsv
+# Dataworks 离线运行包包含环境及业务配置，不提交 Git。
+intent_behavior/output/dataworks/
