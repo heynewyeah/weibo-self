@@ -11,6 +11,19 @@ python3 worker.py --config config/config.yaml
 
 `worker.py` 是唯一允许持续 MySQL 回写的生产入口。
 
+Dataworks 的 SHELL 节点“运行内容”只填写启动脚本路径，不填写多行命令。
+按仓库根目录解析时填写 `intent_behavior/run_dataworks.sh`；若平台实际按已设置的
+`intent_behavior` 代码子路径解析，则填写 `run_dataworks.sh`，不要重复拼接目录。
+“运行参数”留空，脚本已内置 `--config config/config.yaml`，默认持续轮询，不加 `--once`。
+脚本自动定位项目目录，并以 `exec` 前台启动上述唯一生产入口；不会安装依赖、迁移审计
+或修改目录权限。上线前仍需验证目标容器的依赖、网络、目录可写和审计持久化。
+
+从服务器仓库根目录手工执行同一启动脚本（会真实分类并回写）：
+
+```bash
+cd intent_behavior && bash run_dataworks.sh
+```
+
 - `run_single_task.py`：单任务联调/排障，默认不回写；需显式传 `--write-back`。
 - `scripts/manual_classify_mid.py`：指定单个 task_id + mid 的人工排障/受控回写脚本；默认不回写。
 - `run_classification.py`：本地文件、单条、只读预演；MySQL 模式禁止回写。
