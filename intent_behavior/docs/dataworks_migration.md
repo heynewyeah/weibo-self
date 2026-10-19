@@ -1,17 +1,42 @@
 # Dataworks 迁移记录（2026-10-16）
 
-## 当前结论
+## 当前状态（2026-10-19 切换验证中）
 
-运行环境已在目标平台验证，数据库授权尚未通过，未切换生产流量。旧服务器继续运行。
-用户已要求暂停，等待为 MySQL 账号开通权限后再继续。当前配置仍使用 `xuanyu11_r`；
-如果未来使用 `ads_fst`（或其他名称）的 MySQL 账号，必须确认准确账号名及对应凭据，不能仅修改 Dataworks 运行用户。
-不要因诊断节点显示“已完成”就判断迁移完成：诊断脚本曾主动收集失败结果后返回 0。
+用户已确认旧 worker 停止，并授权继续切换。Dataworks 工作流目前仍未上线，
+先验证少量真实 HTTP 回写，再启动前台常驻 worker。不能将“验证完成”视为生产已切换。
 
-工作流：原生内容站博文分类，ID `928f2456-7163-4191-87bb-4d63fad55cd0`，保持未上线。
-原普通 SHELL 节点 ID `384023DA-666F-9C6F-D65E-8409A049A31A`。
-新诊断节点 `intent_behavior_dataworks_probe`（机器学习 / 自定义Shell），ID
-`1BC74F3E-5DD3-E49A-2588-6C5955B59203`。运行用户 `ads_fst`，环境
-`ext_hadoop-2.7.3_hive-2.3.7_spark-3.2.0_auron-7.0`。
+工作流：原生内容站博文分类，ID `928f2456-7163-4191-87bb-4d63fad55cd0`。
+正式自定义Shell：`intent_behavior_worker`，ID `10B7820D-FD00-D14F-33EB-185B78DDA5D0`。
+运行用户 `ads_fst`，环境 `ext_hadoop-2.7.3_hive-2.3.7_spark-3.2.0_auron-7.0`，超时kill=0。
+DAG 已移除旧普通 SHELL 和诊断节点，仅保留正式 worker；诊断定义仍可单独运行。
+
+### 已完成的实机证据
+
+- MySQL 仍使用 `xuanyu11_r`；工单 51328 新增来源 `10.25.1.%` 和 `10.185.13.%`。
+  两个运行池均已连接成功，Linux 用户名与 MySQL 账号独立。
+- 2026-10-16 实例 `A41EDB63-7832-881B-FED2-DBF598643ACB` 在 `10.25.1.227` 完成一条真实图文分类，
+  `write_back=false`，未修改业务等级。18 个任务待处理查询合计 104.1ms，单次最慢 7.7ms。
+- 检查范围内使用现有索引 `idx_customer_super_task_id`，EXPLAIN 最大估计 222 行。
+  严格预检仍提示 20 张分表缺少建议的四列索引；未变更数据库结构，也未把此警告改成通过。
+- HDFS 可写根为 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`。
+  已实测归档上传、下载和解包；真实图文审计在 `validation/dry_run_8f2b876.tar.gz`。
+- 当前部署包必须包含 10 月 19 日新增的重试预算和完整失败档案逻辑，不能继续使用旧 `8f2b876` 包。
+- 离线保护测试共 52 项通过；包含重建目录后恢复 exhausted 预算、路径重定位、状态访问失败时拒绝启动。
+
+### 正式 Shell
+
+```bash
+#!/bin/bash
+set -euo pipefail
+export DATAWORKS_LOG_HDFS='viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks/logs'
+export DATAWORKS_STATE_HDFS='viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks/state/retry_state.sqlite3'
+export DATAWORKS_LOG_SYNC_SEC=60
+exec bash intent_behavior_dataworks/app/scripts/dataworks_bundle_start.sh
+```
+
+重试预算通过 SQLite backup 保存一致副本；新容器启动前从 HDFS 恢复，重建失败档案 JSON 并修正旧容器绝对路径。
+周期同步及正常退出会保存预算。主机崩溃或强制 kill 仍可能丢失最后一个同步周期内的预算，不能声称跨崩溃绝对只重试 3 次。
+以下保留历史诊断和部署说明；其中早期 1045 和 HDFS 路径失败已由上述证据解决。
 
 ## 目标平台实测
 
