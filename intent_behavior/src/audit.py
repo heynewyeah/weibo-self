@@ -15,6 +15,7 @@ import os
 import socket
 import time
 import uuid
+import tempfile
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -52,6 +53,8 @@ class RunAudit:
         self.counts: Counter = Counter()
         self.task_counts: Dict[str, Counter] = {}
         self._finalized = False
+        self.monitor_enabled = bool(config.get("monitor", {}).get("enabled", os.environ.get("DATAWORKS_LOG_HDFS")))
+        self.last_result = {}
 
         if self.local_enabled and self._can_write_local():
             try:
@@ -205,6 +208,9 @@ class RunAudit:
             "interrupted": bool(getattr(result, "interrupted", False)),
         }
         self.write_event("mid_processed", payload)
+        self.last_result = {key: payload[key] for key in
+                            ("task_id", "mid", "status", "layer", "level", "writeback_state", "error_stage", "error")}
+        self.write_live_status("running")
         # MySQL 审计表面向分表消费记录，字段要求 customer/task/record 均存在。
         # 本地单条或文件预演没有分表 record 时只写 JSONL，避免无意义的写库失败日志。
         if record is None:
@@ -241,6 +247,27 @@ class RunAudit:
             "summary": summary,
         })
 
+    def write_live_status(self, state="running", **extra):
+        """小型原子快照；不重复扫描历史审计，不包含原始博文/模型输出。"""
+        if not self.monitor_enabled or not self._can_write_local():
+            return
+        path = os.path.join(os.path.dirname(self.base_dir), "live_worker.json")
+        temporary = None
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            payload = {"run_id": self.run_id, "state": state, "updated_at": time.time(),
+                       "started_at": self.started_at.isoformat(), "counts": dict(self.counts),
+                       "last_result": self.last_result, **extra}
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=os.path.dirname(path), delete=False) as out:
+                temporary = out.name
+                json.dump(payload, out, ensure_ascii=False, default=str)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self.logger.warning("更新实时监控失败: %s", exc)
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
     def finalize(self, extra: Optional[Dict[str, Any]] = None) -> None:
         """写入运行结束事件和便于读取的汇总 JSON；可重复调用。"""
         if self._finalized:
@@ -257,6 +284,7 @@ class RunAudit:
             **(extra or {}),
         }
         self.write_event("run_finished", payload)
+        self.write_live_status("stopped", finished_at=payload["finished_at"])
         if not self.local_enabled or not self.summary_path or not self._can_write_local():
             return
         try:

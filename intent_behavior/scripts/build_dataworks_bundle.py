@@ -45,7 +45,7 @@ def main():
     paths = [PROJECT / n for n in ("worker.py", "run_dataworks.sh", "config/config.yaml", "check_model_service.py")]
     paths += list((PROJECT / "src").glob("*.py"))
     paths += list((PROJECT / "scripts").glob("*.py"))
-    paths += [PROJECT / "scripts/dataworks_bundle_start.sh"]
+    paths += [PROJECT / "scripts/dataworks_bundle_start.sh", PROJECT / "scripts/dataworks_cshell_entry.sh"]
     for path in paths:
         entries["app/" + path.relative_to(PROJECT).as_posix()] = path.read_bytes()
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip()

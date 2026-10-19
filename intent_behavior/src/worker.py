@@ -130,6 +130,8 @@ class MySQLShardWorker:
                              f"失败={loop_summary['fail']} "
                              f"跳过={loop_summary['skipped']}")
 
+        self.pipeline.audit.write_live_status("running", loop_summary=loop_summary,
+                                            worker_stats=vars(self.stats))
         return loop_summary
 
     def run_forever(self) -> None:
@@ -197,6 +199,8 @@ class MySQLShardWorker:
                 except Exception as exc:
                     self.logger.exception("worker 轮询异常: %s", exc)
                     consecutive_errors += 1
+                    self.pipeline.audit.write_live_status("retrying", consecutive_errors=consecutive_errors,
+                                                        error=str(exc)[:300])
                     if max_errors and consecutive_errors >= max_errors:
                         self.logger.error("连续 %s 轮查询异常，退出以便调度平台发现并重新调起", consecutive_errors)
                         raise

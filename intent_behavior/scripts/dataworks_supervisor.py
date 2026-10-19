@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import json
+import socket
 import subprocess
 import sys
 import tarfile
@@ -13,6 +14,40 @@ import time
 import uuid
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def status_payload(child, archive, failures=0, final=False):
+    now = time.time()
+    code = child.poll()
+    payload = {"schema": 1, "updated_at": now, "host": socket.gethostname(),
+               "pid": child.pid, "state": "running" if code is None else ("stopped" if code == 0 else "failed"),
+               "exit_code": code, "archive": archive, "sync_failures": failures,
+               "final": final, "worker": {}, "retry_counts": {}, "log_tail": []}
+    live = PROJECT / "logs/live_worker.json"
+    if live.exists():
+        payload["worker"] = json.loads(live.read_text())
+    db = retry_database()
+    if db.exists():
+        with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2) as conn:
+            payload["retry_counts"] = dict(conn.execute("SELECT status,COUNT(*) FROM retry_state GROUP BY status"))
+    log = PROJECT / "logs/mysql_worker.log"
+    if log.exists():
+        with log.open("rb") as handle:
+            handle.seek(max(0, log.stat().st_size - 65536))
+            payload["log_tail"] = [line[-1500:] for line in handle.read().decode("utf-8", "replace").splitlines()[-60:]]
+    return payload
+
+
+def publish_status(child, archive, failures=0, final=False):
+    payload = status_payload(child, archive, failures, final)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "status.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False))
+        subprocess.run(["hdfs", "dfs", "-put", "-f", str(path),
+                        os.environ["DATAWORKS_LOG_HDFS"].rstrip("/") + "/status.json"],
+                       check=True, timeout=60)
+    print("DATAWORKS_HEARTBEAT " + json.dumps({"state": payload["state"],
+          "counts": payload["worker"].get("counts", {}), "retry_counts": payload["retry_counts"]}), flush=True)
 
 
 def retry_database():
@@ -107,6 +142,7 @@ def main():
     failures, failed = 0, False
     print("DATAWORKS_LOG_ARCHIVE " + target, flush=True)
     try:
+        publish_status(child, target)
         while child.poll() is None:
             try:
                 child.wait(timeout=interval)
@@ -115,6 +151,7 @@ def main():
             try:
                 snapshot(target)
                 failures = 0
+                publish_status(child, target)
             except (OSError, subprocess.SubprocessError) as exc:
                 failures += 1
                 print("DATAWORKS_LOG_SYNC_FAILED " + type(exc).__name__, flush=True)
@@ -132,6 +169,7 @@ def main():
                 failed = True
         try:
             snapshot(target)
+            publish_status(child, target, failures, final=True)
         except (OSError, subprocess.SubprocessError) as exc:
             print("DATAWORKS_FINAL_LOG_SYNC_FAILED " + type(exc).__name__, flush=True)
             failed = True
