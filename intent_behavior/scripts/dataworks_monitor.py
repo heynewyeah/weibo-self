@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 
-DEFAULT_ROOT = "viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks"
+DEFAULT_ROOT = "viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks"
 
 
 def assess(status, now=None, stale_seconds=180):

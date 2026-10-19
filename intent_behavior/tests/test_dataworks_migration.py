@@ -1,5 +1,6 @@
 """迁移保护的离线检查；不连接数据库、不调用模型、不上传日志。"""
 import os
+import errno
 from pathlib import Path
 import signal
 import sqlite3
@@ -39,11 +40,20 @@ class DataworksMigrationTests(unittest.TestCase):
                     shutil.copyfile(saved, command[-1])
                 return subprocess.CompletedProcess(command, 0)
 
+            atomic_replace = os.replace
+
+            def workspace_replace(source_path, target_path):
+                # Simulate /tmp on a different mount from the scheduler workspace.
+                if Path(source_path).parent.parent != Path(target_path).parent:
+                    raise OSError(errno.EXDEV, "Invalid cross-device link")
+                atomic_replace(source_path, target_path)
+
             with patch.object(supervisor, "PROJECT", root / "old"), \
                  patch.object(supervisor.subprocess, "run", side_effect=hdfs):
                 supervisor.sync_retry_state("hdfs://unit/state/retry.sqlite3")
             with patch.object(supervisor, "PROJECT", root / "new"), \
-                 patch.object(supervisor.subprocess, "run", side_effect=hdfs):
+                 patch.object(supervisor.subprocess, "run", side_effect=hdfs), \
+                 patch.object(supervisor.os, "replace", side_effect=workspace_replace):
                 supervisor.restore_retry_state("hdfs://unit/state/retry.sqlite3")
                 with sqlite3.connect(str(supervisor.retry_database())) as conn:
                     row = conn.execute("SELECT attempts,status,failure_log FROM retry_state").fetchone()

@@ -80,7 +80,9 @@ def restore_retry_state(destination):
         return
     target = retry_database()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
+    # /tmp and the scheduler workspace may be different mounts; atomic replace
+    # requires the downloaded database to live on the target filesystem.
+    with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
         downloaded = Path(tmp) / name
         subprocess.run(["hdfs", "dfs", "-get", destination, str(downloaded)],
                        check=True, timeout=90)
