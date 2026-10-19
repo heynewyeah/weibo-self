@@ -5,6 +5,9 @@ RELEASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$RELEASE_DIR"
 sha256sum -c SHA256SUMS >/dev/null
 ROOT='viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks'
+# Runtime stays at its verified location; data can use a separately verified root.
+DATA_ROOT="${DATAWORKS_DATA_ROOT:-$ROOT}"
+DATA_ROOT="${DATA_ROOT%/}"
 ENV_ZIP="$ROOT/runtime/environment_20261016.zip"
 ENV_SOURCE='hdfs://wbml-streaming-ns/wbml_data/waic_scheduler/resource/226/202610/1792136858405/intent_behavior_dataworks.zip'
 ENV_SHA='7c4446c525d3edb6b2b403a9e207e283ea80935c6e29d26b5bb857e2e9d1cfd4'
@@ -22,8 +25,8 @@ export PYTHON_BIN="$RELEASE_DIR/environment/intent_behavior_dataworks/runtime/py
 export PYTHONNOUSERSITE=1 TZ=Asia/Shanghai
 case "${1:-worker}" in
   worker)
-    export DATAWORKS_LOG_HDFS="$ROOT/logs"
-    export DATAWORKS_STATE_HDFS="$ROOT/state/retry_state.sqlite3"
+    export DATAWORKS_LOG_HDFS="$DATA_ROOT/logs"
+    export DATAWORKS_STATE_HDFS="$DATA_ROOT/state/retry_state.sqlite3"
     export DATAWORKS_LOG_SYNC_SEC=60
     exec bash app/run_dataworks.sh ;;
   monitor)
@@ -31,7 +34,7 @@ case "${1:-worker}" in
     # Bash 4.2 treats an empty array as unbound under set -u.
     if [ -n "${MONITOR_MID:-}" ]; then set -- --mid "$MONITOR_MID" "$@"; fi
     if [ -n "${MONITOR_TASK_ID:-}" ]; then set -- --task-id "$MONITOR_TASK_ID" "$@"; fi
-    exec "$PYTHON_BIN" -u app/scripts/dataworks_monitor.py --hdfs-root "$ROOT" "$@" ;;
+    exec "$PYTHON_BIN" -u app/scripts/dataworks_monitor.py --hdfs-root "$DATA_ROOT" "$@" ;;
   check)
     exec "$PYTHON_BIN" app/scripts/dataworks_runtime_check.py ;;
   *) echo 'Usage: dataworks_cshell_entry.sh [worker|monitor|check]' >&2; exit 2 ;;
