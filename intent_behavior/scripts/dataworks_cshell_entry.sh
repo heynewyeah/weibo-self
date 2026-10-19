@@ -28,10 +28,10 @@ case "${1:-worker}" in
     exec bash app/run_dataworks.sh ;;
   monitor)
     shift
-    EXTRA=()
-    if [ -n "${MONITOR_MID:-}" ]; then EXTRA+=(--mid "$MONITOR_MID"); fi
-    if [ -n "${MONITOR_TASK_ID:-}" ]; then EXTRA+=(--task-id "$MONITOR_TASK_ID"); fi
-    exec "$PYTHON_BIN" -u app/scripts/dataworks_monitor.py --hdfs-root "$ROOT" "${EXTRA[@]}" "$@" ;;
+    # Bash 4.2 treats an empty array as unbound under set -u.
+    if [ -n "${MONITOR_MID:-}" ]; then set -- --mid "$MONITOR_MID" "$@"; fi
+    if [ -n "${MONITOR_TASK_ID:-}" ]; then set -- --task-id "$MONITOR_TASK_ID" "$@"; fi
+    exec "$PYTHON_BIN" -u app/scripts/dataworks_monitor.py --hdfs-root "$ROOT" "$@" ;;
   check)
     exec "$PYTHON_BIN" app/scripts/dataworks_runtime_check.py ;;
   *) echo 'Usage: dataworks_cshell_entry.sh [worker|monitor|check]' >&2; exit 2 ;;
