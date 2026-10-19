@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 import signal
+import sqlite3
+import json
 import subprocess
 import sys
 import tarfile
@@ -11,6 +13,54 @@ import time
 import uuid
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def retry_database():
+    return PROJECT / "logs/failures/retry_state.sqlite3"
+
+
+def sync_retry_state(destination):
+    """用 SQLite backup 获取已提交的一致副本，不能直接复制正在写的数据库。"""
+    source = retry_database()
+    if not source.exists():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        backup = Path(tmp) / "retry_state.sqlite3"
+        with sqlite3.connect(str(source)) as live, sqlite3.connect(str(backup)) as saved:
+            live.backup(saved)
+        subprocess.run(["hdfs", "dfs", "-put", "-f", str(backup), destination],
+                       check=True, timeout=90)
+    print("DATAWORKS_RETRY_STATE_SYNCED", flush=True)
+
+
+def restore_retry_state(destination):
+    """新容器消费前恢复预算；访问失败或状态损坏时拒绝启动。"""
+    parent, name = destination.rsplit("/", 1)
+    subprocess.run(["hdfs", "dfs", "-mkdir", "-p", parent], check=True, timeout=60)
+    listing = subprocess.run(["hdfs", "dfs", "-ls", parent], check=True,
+                             capture_output=True, text=True, timeout=60)
+    if not any(line.split()[-1].rstrip("/").endswith("/" + name)
+               for line in listing.stdout.splitlines() if line.split()):
+        print("DATAWORKS_RETRY_STATE_NEW", flush=True)
+        return
+    target = retry_database()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        downloaded = Path(tmp) / name
+        subprocess.run(["hdfs", "dfs", "-get", destination, str(downloaded)],
+                       check=True, timeout=90)
+        with sqlite3.connect(str(downloaded)) as conn:
+            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise RuntimeError("HDFS 重试状态损坏，拒绝重置预算")
+            rows = conn.execute("SELECT record_key, payload FROM retry_state").fetchall()
+            for key, payload in rows:
+                # 平台每次分配不同工作目录，不能沿用旧容器的绝对路径。
+                path = target.parent / (key + ".json")
+                conn.execute("UPDATE retry_state SET failure_log=? WHERE record_key=?", (str(path), key))
+                path.write_text(json.dumps(json.loads(payload), ensure_ascii=False, indent=2))
+        os.replace(downloaded, target)
+        target.chmod(0o600)
+    print("DATAWORKS_RETRY_STATE_RESTORED rows=" + str(len(rows)), flush=True)
 
 
 def snapshot(destination):
@@ -29,12 +79,17 @@ def snapshot(destination):
                         tar.addfile(info, handle)
         subprocess.run(["hdfs", "dfs", "-put", "-f", str(archive), destination],
                        check=True, timeout=90)
+    if os.environ.get("DATAWORKS_STATE_HDFS"):
+        sync_retry_state(os.environ["DATAWORKS_STATE_HDFS"])
+    print("DATAWORKS_LOG_SYNC_OK " + destination, flush=True)
 
 
 def main():
     destination = os.environ["DATAWORKS_LOG_HDFS"].rstrip("/")
     interval = max(10, int(os.environ.get("DATAWORKS_LOG_SYNC_SEC", "60")))
     subprocess.run(["hdfs", "dfs", "-mkdir", "-p", destination], check=True, timeout=60)
+    if os.environ.get("DATAWORKS_STATE_HDFS"):
+        restore_retry_state(os.environ["DATAWORKS_STATE_HDFS"])
     target = destination + "/" + time.strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex + ".tar.gz"
     # 启动前先验证真实写权限；失败时不启动会产生业务写入的 worker。
     snapshot(target)
