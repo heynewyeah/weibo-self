@@ -113,7 +113,7 @@ python3 worker.py --config config/config.yaml --once
 服务器已具备HDFS客户端及 `ads_fst` 访问权限时，从仓库根目录执行（只读，Ctrl+C仅退出查看）：
 
 ```bash
-cd intent_behavior && python3 scripts/dataworks_monitor.py --watch --interval 30
+cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks --watch --interval 30
 ```
 
 ### 单条失败留存与有限重试

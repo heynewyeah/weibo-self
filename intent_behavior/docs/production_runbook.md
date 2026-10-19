@@ -13,6 +13,8 @@
 - 监控只读，状态约60秒更新，心跳超过180秒标记过期；它不会启动分类或修改业务数据。
 - 日/周/月报告的旧服务器 cron 尚未自动接入新 HDFS 审计输入，不能将其旧本地统计当作迁移后的完整数据。
 
+日志、心跳及重试数据库位于 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks`。旧服务目录保留历史及离线运行环境，不能直接删除。
+
 具体页面链接、状态和限制见 [Dataworks 迁移记录](dataworks_migration.md)。
 
 ## 唯一正式入口

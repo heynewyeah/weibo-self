@@ -4,7 +4,7 @@
 
 用户确认旧 worker 已停止，随后要求跳过现有反解失败样本的回写验证，继续迁移并实现随时监控。
 正式工作流已保存为“已上线”，Cron 为 `0 0/5 * * * ?`，检查上一个实例未完成=是，提交失败重试=串行。
-正式 worker 于11:33:34启动；当前仅一条正式消费路径，已持续发布运行心跳、日志与重试状态。
+11:33旧实例已于14:44停止；个人目录迁移后使用修复版启动，15:13节点已恢复4条重试状态并向新目录发布运行心跳。
 本次待处理记录反解返回30004，未发生真实回写；不能把运行心跳视为业务回写已经验证。
 
 工作流：原生内容站博文分类，ID `928f2456-7163-4191-87bb-4d63fad55cd0`。
@@ -20,7 +20,7 @@ DAG 已移除旧普通 SHELL 和诊断节点，仅保留正式 worker；诊断�
   `write_back=false`，未修改业务等级。18 个任务待处理查询合计 104.1ms，单次最慢 7.7ms。
 - 检查范围内使用现有索引 `idx_customer_super_task_id`，EXPLAIN 最大估计 222 行。
   严格预检仍提示 20 张分表缺少建议的四列索引；未变更数据库结构，也未把此警告改成通过。
-- HDFS 可写根为 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`。
+- 最初 HDFS 可写根为 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`；当前日志和状态已迁到下文的个人项目目录。
   已实测归档上传、下载和解包；真实图文审计在 `validation/dry_run_8f2b876.tar.gz`。
 - 当前部署包必须包含 10 月 19 日新增的重试预算和完整失败档案逻辑，不能继续使用旧 `8f2b876` 包。
 - 离线保护测试共56项通过，包含心跳过期识别、监控只读查询、完整失败档案、重试预算恢复和生产保护。
@@ -34,17 +34,34 @@ DAG 已移除旧普通 SHELL 和诊断节点，仅保留正式 worker；诊断�
 - 重新读取工作流配置确认已上线；查看运行历史时只有11:33:34这一条进行中实例，未见重复worker。
   尚未主动验证强杀后的自动恢复、平台最长运行时长及真实回写成功。
 
+### 个人项目目录迁移（10月19日下午）
+
+- 用户指定项目目录 `/dw_ext/ad/person/xuanyu11/intent_behavior`。以 `ads_fst` 实际创建、写入、重命名、读回均成功；未更改目录权限。
+- 用户明确允许短暂停顿后，暂停Cron，停止旧节点 `B1EC3AE4-615F-CDF1-1F59-1A887C96F2CA`（14:44:09结束）。
+- 最终迁移实例 `CE04F665-3CBA-DE11-2BC8-2DEB80460C7F`（10.185.13.63，14:45:18–14:46:18）返回0。
+  日志逐文件SHA256、tar目录校验、SQLite quick_check通过，重试状态为 `exhausted=4`。
+  整个暂存目录原子重命名为项目下 `dataworks/`；旧根及在线预复制副本均保留。
+- 首次新实例 `5F01B3CA-F794-ABEB-99DB-51313BCD031D` 启动时发现 `/tmp` 与任务工作目录分属不同挂载，
+  `os.replace` 返回 EXDEV。已改为在重试数据库同目录创建临时文件，并加入模拟跨挂载的恢复测试，11项相关测试通过。
+- 修复版工作流实例 `BFAB500C-B293-35B0-1BD7-EFCD594276F4`，节点 `F0F56582-56E8-97B9-4F7D-8E5D7F301748`，
+  主机10.185.13.62，15:13:11启动。实机确认 `DATAWORKS_RETRY_STATE_RESTORED rows=4`，随后向新目录同步日志和状态，心跳running、exhausted=4。
+- 工作流级代码类型改为“无”，正式程序使用已上传依赖包；移除自动遗留的phab初始化节点，当前实例中该无用节点已跳过。
+- 新目录只读监控实例 `7BE654B8-FB77-6E8B-A6B6-EBBAFE1275BC`（10.185.13.61，15:18:15–15:19:05）返回0：心跳72.2秒、轮询21轮、18个任务、exhausted=4，归档指向个人目录。
+- 完成后重新加载页面确认“已上线”、Cron `0 0/5 * * * ?`、未完成实例检查=是、提交失败串行重试；DAG任务列表仅1条正式Worker。当前15:13工作流实例恢复为进行中。
+- 回退时保留当前重试预算：先停当前Worker，把个人目录的最新 `state/retry_state.sqlite3` 同步到旧根，再使用旧入口启动；不要直接拿旧状态覆盖新状态。
+
 ### 正式 Shell
 
 ```bash
 #!/bin/bash
 set -euo pipefail
-exec bash intent_behavior_release/app/scripts/dataworks_cshell_entry.sh worker
+export DATAWORKS_DATA_ROOT='viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks'
+exec bash intent_behavior_personal_v2/app/scripts/dataworks_cshell_entry.sh worker
 ```
 
-正式节点当前源码包 `intent_behavior_release_monitor_20261019.zip`，基于提交 `ec1f3c2`；
-SHA256 `14df680234a991bdd5299ad8cde9abae0ed9f6bc9030e0c35591aa1adc9a3674`。
-启动器使用新源码，但Python离线环境从自有HDFS `runtime/environment_20261016.zip` 下载；
+正式节点当前源码包 `intent_behavior_personal_v2_20261019.zip`，基于提交 `9f9f489`；
+SHA256 `9516e50edb168a2faf6adc6066d7cca9ebcf7b24f1d4029640bc6f99ec5f9e6e`。
+启动器使用新源码，但Python离线环境从自有HDFS旧服务根 `runtime/environment_20261016.zip` 下载；
 环境SHA256 `7c4446c525d3edb6b2b403a9e207e283ea80935c6e29d26b5bb857e2e9d1cfd4`。
 旧8f2b876依赖引用仍显示在页面，实际文件不存在且未使用；当前启动成功不依赖该文件。
 后续不要删除原预检环境资源或自有runtime副本来清理日志。
@@ -70,26 +87,29 @@ ZIP目录为 `intent_behavior_release_v2`（避免与旧包解压目录冲突）
 ```bash
 #!/bin/bash
 set -euo pipefail
-exec bash intent_behavior_release_v2/app/scripts/dataworks_cshell_entry.sh monitor
+exec bash intent_behavior_release_v2/app/scripts/dataworks_cshell_entry.sh monitor --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks
 ```
 
-HDFS根目录 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`：
+当前日志和重试状态根目录 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks`：
 
 - `logs/status.json`：最新状态，周期覆盖。
-- `logs/20261019_113416_fa0df2c2730c49d4ada5897b6cc4bf32.tar.gz`：当前实例完整日志归档，周期覆盖。
+- `logs/20261019_151407_4cc9d94d2de94dacba843adb701dbb41.tar.gz`：15:13实例完整日志归档，周期覆盖。
+- `logs/20261019_113416_fa0df2c2730c49d4ada5897b6cc4bf32.tar.gz`：迁移保留的旧实例日志归档。
 - `state/retry_state.sqlite3`：一致的重试状态副本，新容器消费前恢复。
-- `runtime/environment_20261016.zip`：已复制的离线运行环境。
+
+离线环境仍从旧服务目录 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks/runtime/environment_20261016.zip` 下载。
+这次仅迁移日志和状态，个人项目原有 `data/`、`output/` 未修改。
 
 服务器具备HDFS客户端和 `ads_fst` 权限、仓库已更新时，新的执行命令（只读，Ctrl+C只退出查看）：
 
 ```bash
-cd intent_behavior && python3 scripts/dataworks_monitor.py --watch --interval 30
+cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks --watch --interval 30
 ```
 
 按MID查询（只读，把MID替换为目标值）：
 
 ```bash
-cd intent_behavior && python3 scripts/dataworks_monitor.py --mid 5354439580059623
+cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks --mid 5354439580059623
 ```
 
 已有日报/周报/月报的cron仍读旧服务器本地审计目录，尚未接入HDFS新归档；不要用它判断迁移后完整处理量。
