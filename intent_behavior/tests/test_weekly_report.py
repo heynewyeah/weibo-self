@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -32,6 +33,48 @@ SPEC.loader.exec_module(weekly_report)
 
 
 class WeeklyReportTests(unittest.TestCase):
+    def test_report_lists_failure_files_and_current_exhausted_backlog_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            audit_dir = root / "runs"
+            audit_dir.mkdir()
+            failures = root / "failures"
+            failures.mkdir()
+            state = failures / "retry_state.sqlite3"
+            with sqlite3.connect(state) as conn:
+                conn.execute("CREATE TABLE retry_state (status TEXT)")
+                conn.executemany("INSERT INTO retry_state VALUES (?)", [("exhausted",), ("exhausted",), ("waiting",)])
+            log = str(failures / "record.json")
+            event = {"event": "mid_retry_exhausted", "customer_id": 1, "task_id": 2,
+                     "record_id": 3, "mid": "m1", "failure_log": log, "raw": "不要发送的原始正文"}
+            events = [
+                {"event": "mid_processed", "status": "failed", "error_stage": "resolve", "mid": "m1"},
+                event, dict(event),
+            ]
+            day = date(2026, 10, 18)
+            report = weekly_report.build_report(events, day, day, audit_dir, "日报")
+            self.assertIn("- 处理尝试：1\n", report)
+            self.assertIn("- 本窗口新增停止自动重试：1 条", report)
+            self.assertIn("- 当前累计预算已耗尽：2 条", report)
+            self.assertIn("- 当前等待重试：1 条", report)
+            self.assertIn(log, report)
+            self.assertIn(str(state), report)
+            self.assertNotIn("不要发送的原始正文", report)
+            idle_report = weekly_report.build_report([], day, day, audit_dir, "日报")
+            self.assertIn("- 本窗口新增停止自动重试：0 条", idle_report)
+            self.assertIn("- 当前累计预算已耗尽：2 条", idle_report)
+
+    def test_unreadable_retry_state_does_not_break_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "runs").mkdir()
+            (root / "failures").mkdir()
+            state = root / "failures" / "retry_state.sqlite3"
+            state.write_bytes(b"bad sqlite file")
+            report = weekly_report.build_report([], date(2026, 10, 18), date(2026, 10, 18), root / "runs")
+            self.assertIn("无法读取重试状态", report)
+            self.assertEqual(b"bad sqlite file", state.read_bytes())
+
     def write_events(self, root, folder, events):
         day_dir = root / folder
         day_dir.mkdir(exist_ok=True)

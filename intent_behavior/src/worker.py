@@ -22,12 +22,15 @@ import os
 import sys
 import logging
 import time
+import copy
+import traceback
 from datetime import date
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .pipeline import ClassifyPipeline
 from .db_client import MySQLTaskRepository, TaskRecord, MidRecord
+from .retry_state import FailureRetryStore, RetryPersistenceError, failure_directory
 
 
 @dataclass
@@ -50,7 +53,15 @@ class MySQLShardWorker:
         self.mysql_cfg = config.get("mysql", {})
         self.logger = logger or logging.getLogger(__name__)
         self.repo = MySQLTaskRepository(self.mysql_cfg, self.logger, app_config=config)
-        self.pipeline = ClassifyPipeline(config, self.logger)
+        # 统一由持久化预算负责重试，避免一条记录的 HTTP 内层重试与轮询重试相乘。
+        pipeline_config = copy.deepcopy(config)
+        for section in ("api", "mid_resolver", "result_writer"):
+            pipeline_config.setdefault(section, {})["max_retry"] = 1
+        self.retry_store = FailureRetryStore(
+            failure_directory(config), self.worker_cfg.get("max_retries", 3),
+            self.worker_cfg.get("retry_delays_sec", [60, 300, 1800]),
+        )
+        self.pipeline = ClassifyPipeline(pipeline_config, self.logger)
         self.stats = WorkerStats()
 
     def _acquire_instance_lock(self):
@@ -125,12 +136,16 @@ class MySQLShardWorker:
         poll_interval = float(self.worker_cfg.get("poll_interval_sec", 10))
         idle_heartbeat_sec = max(0.0, float(self.worker_cfg.get("idle_heartbeat_sec", 1800)))
         max_loops = int(self.worker_cfg.get("max_loops", 0))
-        max_errors = max(0, int(self.worker_cfg.get("max_consecutive_loop_errors", 0)))
+        max_errors = max(0, int(self.worker_cfg.get("max_consecutive_loop_errors", 3)))
         consecutive_errors = 0
         daily_reset = bool(self.worker_cfg.get("daily_reset", True))
         day_started = date.today()
 
         self.logger.info("MySQL 分表 worker 启动")
+        self.logger.info(
+            "单条重试保护: 最多额外重试=%s 间隔(秒)=%s 失败档案及状态=%s",
+            self.retry_store.max_attempts - 1, self.retry_store.delays, self.retry_store.directory,
+        )
         self.logger.info(
             "配置: poll_interval=%ss fetch_limit_per_task=%s active_task_limit=%s "
             "idle_heartbeat_sec=%s daily_reset=%s single_instance=%s",
@@ -176,6 +191,9 @@ class MySQLShardWorker:
                 except KeyboardInterrupt:
                     self.logger.info("收到中断信号，worker 退出")
                     break
+                except RetryPersistenceError:
+                    self.logger.exception("无法可靠保存失败详情/重试预算，停止 worker，请检查存储")
+                    raise
                 except Exception as exc:
                     self.logger.exception("worker 轮询异常: %s", exc)
                     consecutive_errors += 1
@@ -199,10 +217,25 @@ class MySQLShardWorker:
     def _process_task(self, task: TaskRecord, batch_limit: int,
                       task_idx: int, total_tasks: int) -> Dict[str, int]:
         # 仅作短时间只读拉取；真正处理前会用命名锁互斥并再次检查 level=0。
+        pending_records = []
+        after_id = None
+        # 被隔离/冷却中的 level=0 不能占满 LIMIT，阻塞后续正常记录。
         with self.repo.connect() as conn:
-            pending_records = self.repo.fetch_pending_mids(
-                conn, task, limit=batch_limit, only_level_zero=True, for_update=False
-            )
+            while len(pending_records) < batch_limit:
+                page = self.repo.fetch_pending_mids(
+                    conn, task, limit=batch_limit, only_level_zero=True,
+                    for_update=False, after_id=after_id,
+                )
+                if not page:
+                    break
+                for record in page:
+                    if self.retry_store.eligible(record):
+                        pending_records.append(record)
+                        if len(pending_records) >= batch_limit:
+                            break
+                if len(page) < batch_limit:
+                    break
+                after_id = max(record.id for record in page)
 
         task_summary = {
             "pending": len(pending_records),
@@ -268,15 +301,16 @@ class MySQLShardWorker:
         return task_summary
 
     def _process_record(self, task: TaskRecord, record: MidRecord) -> str:
-        try:
-            lock_timeout = int(self.worker_cfg.get("record_lock_timeout_sec", 0))
-            with self.repo.acquire_record_lock(record, timeout_sec=lock_timeout) as acquired:
-                if not acquired:
-                    return "skipped"
-                if not self.repo.is_pending(record):
-                    return "skipped"
-
-                # 命名锁覆盖整条外部处理链路，但不持有数据库事务/行锁。
+        lock_timeout = int(self.worker_cfg.get("record_lock_timeout_sec", 0))
+        with self.repo.acquire_record_lock(record, timeout_sec=lock_timeout) as acquired:
+            if not acquired or not self.repo.is_pending(record):
+                return "skipped"
+            if self.retry_store.reserve(task, record) is None:
+                return "skipped"
+            # 命名锁覆盖整条外部处理链路；本地预算也在锁内二次检查。
+            process_result = None
+            exception = ""
+            try:
                 process_result = self.pipeline.process_one(
                     mid=record.mid,
                     uid=record.mid_uid,
@@ -284,28 +318,29 @@ class MySQLShardWorker:
                     write_back=True,
                     record=record,
                 )
-                if process_result.fallback_level_written:
-                    return "fallback"
-                return "success" if process_result.success else "fail"
-        except KeyboardInterrupt:
-            # 交给入口统一做审计 finalize 和进程退出；不能转成业务失败或回写 level=6。
-            raise
-        except Exception as exc:
-            self.logger.exception(
-                "记录处理异常 task_id=%s mid=%s error=%s",
-                task.task_id,
-                record.mid,
-                exc,
-            )
-            try:
-                self.repo.update_record_failure(None, record, str(exc))
-            except Exception as write_exc:
+            except KeyboardInterrupt:
+                self.retry_store.finish(record, interrupted=True)
+                raise
+            except RetryPersistenceError:
+                raise
+            except Exception:
+                exception = traceback.format_exc()
                 self.logger.exception(
-                    "失败回写再次失败 task_id=%s mid=%s error=%s",
-                    task.task_id,
-                    record.mid,
-                    write_exc,
+                    "记录处理异常 task_id=%s mid=%s", task.task_id, record.mid,
                 )
+            saved = self.retry_store.finish(record, process_result, exception=exception)
+            if saved["status"] == "resolved":
+                return "fallback" if process_result.fallback_level_written else "success"
+            self.pipeline.audit.write_event("mid_retry_exhausted" if saved["status"] == "exhausted"
+                                            else "mid_retry_scheduled", {
+                "customer_id": record.customer_id, "task_id": record.super_task_id,
+                "record_id": record.id, "mid": record.mid, **saved,
+            })
+            self.logger.warning(
+                "单条处理失败 task_id=%s mid=%s 累计尝试=%s 状态=%s 失败详情=%s 下次重试=%s",
+                task.task_id, record.mid, saved["attempt"], saved["status"],
+                saved["failure_log"], saved["next_retry_at"],
+            )
             return "fail"
 
 

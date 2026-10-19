@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_RESOLVER_URL = "http://terra.biz.weibo.com/mid/media"
 
 
+class MidResolveError(RuntimeError):
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.details = details
+
+
 @dataclass
 class ResolvedBlog:
     """mid 反解后的博文信息"""
@@ -112,7 +118,9 @@ class MidResolverClient:
             params["obj_type"] = obj_type
 
         last_error = ""
+        diagnostics = []
         for attempt in range(1, self.max_retry + 1):
+            resp = None
             try:
                 self.logger.debug(
                     f"[MidResolver] 请求反解 mid={mid} uid={uid or ''} (attempt {attempt})"
@@ -136,8 +144,16 @@ class MidResolverClient:
             except Exception as e:
                 last_error = f"反解接口未知异常: {e}"
                 self.logger.warning(f"[MidResolver] {last_error}: mid={mid}")
+            diagnostics.append({
+                "attempt": attempt, "error": last_error,
+                "http_status": resp.status_code if resp is not None else None,
+                "response_body": resp.text if resp is not None else None,
+            })
 
-        raise RuntimeError(f"[MidResolver] 反解失败 mid={mid}: {last_error}")
+        raise MidResolveError(f"[MidResolver] 反解失败 mid={mid}: {last_error}", {
+            "request": {"url": self.url, "params": params, "timeout": self.timeout},
+            "attempts": diagnostics,
+        })
 
     def _parse_response(self, mid: str, uid: Optional[str], data: Dict[str, Any]) -> ResolvedBlog:
         code = data.get("code")

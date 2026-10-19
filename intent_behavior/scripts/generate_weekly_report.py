@@ -44,8 +44,10 @@ import json
 import math
 import os
 import shutil
+import sqlite3
 import sys
 from collections import Counter, defaultdict
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -234,6 +236,34 @@ def counter_lines(counter: Counter, total: int, empty_text: str = "暂无") -> L
     ]
 
 
+def failure_report_lines(audit_dir: Path, paths, exhausted) -> List[str]:
+    directory = audit_dir.resolve().parent / "failures"
+    state_path = directory / "retry_state.sqlite3"
+    lines = ["### 失败留存与重试", f"- 完整失败档案目录：`{directory}`",
+             f"- 本窗口新增停止自动重试：{len(exhausted)} 条",
+             "- 默认重试规则：首次处理后最多额外 3 次；间隔 1 / 5 / 30 分钟。",
+             "- 达到上限后保留 level=0 等待人工排查，不再自动调用反解/模型/回写。"]
+    if state_path.is_file():
+        try:
+            # 只读打开，不创建文件、不修改状态；日报不能触发重试或泄露原始内容。
+            with closing(sqlite3.connect(state_path.as_uri() + "?mode=ro", uri=True, timeout=2)) as conn:
+                counts = dict(conn.execute("SELECT status, COUNT(*) FROM retry_state GROUP BY status"))
+            lines.extend([
+                f"- 当前累计预算已耗尽：{counts.get('exhausted', 0)} 条（当前状态，非本窗口新增）",
+                f"- 当前等待重试：{counts.get('waiting', 0)} 条（当前状态）",
+                f"- 持久化重试状态及完整详情备份：`{state_path}`",
+            ])
+        except sqlite3.Error:
+            lines.append(f"- 警告：无法读取重试状态，请在服务器检查 `{state_path}`。")
+    else:
+        lines.append("- 尚无新重试机制的持久化档案；历史失败请查看上面的 JSONL 审计目录。")
+    if paths:
+        lines.append("- 本窗口失败档案（最多列出 10 个，其余见上述目录）：")
+        lines.extend(f"  - `{path}`" for path in sorted(paths)[:10])
+    lines.append("- 档案含完整输入与失败详情，仅保存在服务器；机器人不展示原始正文和模型输出。")
+    return lines
+
+
 def build_report(
     events: Iterable[Dict[str, Any]],
     start_day: date,
@@ -253,11 +283,18 @@ def build_report(
     error_stage_counts: Counter = Counter()
     daily_counts: Dict[str, Counter] = defaultdict(Counter)
     timings: List[float] = []
+    failure_paths = set()
+    exhausted = set()
 
     for event in events:
         run_id = str(event.get("run_id") or "")
         if run_id:
             runs.add(run_id)
+        if event.get("event") in ("mid_retry_scheduled", "mid_retry_exhausted"):
+            if event.get("failure_log"):
+                failure_paths.add(str(event["failure_log"]))
+            if event["event"] == "mid_retry_exhausted":
+                exhausted.add((event.get("customer_id"), event.get("task_id"), event.get("record_id"), event.get("mid")))
         if event.get("event") != "mid_processed":
             continue
 
@@ -378,6 +415,8 @@ def build_report(
         f"- JSONL 目录占用：{fmt_bytes(audit_size)}",
         f"- 所在磁盘可用空间：{fmt_bytes(disk.free)} / {fmt_bytes(disk.total)}"
         f"（使用率 {disk.used / disk.total * 100:.1f}%）",
+        "",
+        *failure_report_lines(audit_dir, failure_paths, exhausted),
         "",
         "> 口径说明：success 为正常分类并回写；fallback 为处理异常但已按业务规则回写 level=6；"
         "failed 为未闭环失败；interrupted 为人工 Ctrl+C 中止，mid 应保持 level=0。"

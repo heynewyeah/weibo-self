@@ -74,6 +74,8 @@ class ProcessResult:
     success: bool = False
     error: str = ""
     error_stage: str = ""
+    error_traceback: str = ""
+    error_details: Dict[str, Any] = field(default_factory=dict)
     model_output: str = ""
     industry_name: str = ""
     source_industry_name: str = ""
@@ -93,7 +95,7 @@ class ProcessResult:
     writeback_state: str = "not_requested"
     writeback_response: Dict[str, Any] = field(default_factory=dict)
     # 兼容历史审计字段。新逻辑不再将反解/媒体/模型等技术失败回写为 level=6；
-    # 技术失败保持 level=0，等待下一轮或人工重试。
+    # 技术失败保持 level=0，由 worker 的持久化预算控制自动重试或人工排查。
     fallback_level_written: bool = False
     # 人工 Ctrl+C 中止不是业务分类失败，不能回写 level=6。
     interrupted: bool = False
@@ -115,6 +117,8 @@ class ProcessResult:
             "success": self.success,
             "error": self.error,
             "error_stage": self.error_stage,
+            "error_traceback": self.error_traceback,
+            "error_details": self.error_details,
             "model_output": self.model_output,
             "industry_name": self.industry_name,
             "source_industry_name": self.source_industry_name,
@@ -210,6 +214,8 @@ class ClassifyPipeline:
                 )
             except Exception as e:
                 result.error = f"反解失败: {str(e)}"
+                result.error_traceback = traceback.format_exc()
+                result.error_details = getattr(e, "details", {})
                 result.error_stage = "resolve"
                 # 反解失败属于技术失败，保持 level=0 等待重试。
                 self._write_resolve_fail_log(result, record)
@@ -317,6 +323,7 @@ class ClassifyPipeline:
             raise
         except Exception:
             result.success = False
+            result.error_traceback = traceback.format_exc()
             if not result.error:
                 result.error = traceback.format_exc()
             if not result.error_stage:

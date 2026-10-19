@@ -326,6 +326,7 @@ class MySQLTaskRepository:
         limit: int = 100,
         only_level_zero: bool = True,
         for_update: bool = False,
+        after_id: Optional[int] = None,
     ) -> List[MidRecord]:
         """
         拉取待处理记录。
@@ -343,18 +344,24 @@ class MySQLTaskRepository:
         task_match_value = task.task_id if task_match_field == "super_task_id" else task.id
         level_cond = f"AND level = {self.pending_level}" if only_level_zero else ""
         lock_clause = "FOR UPDATE" if for_update else ""
+        cursor_cond = "AND id > %s" if after_id is not None else ""
         sql = f"""
         SELECT *
         FROM {table}
         WHERE customer_id = %s
           AND {task_match_field} = %s
           {level_cond}
+          {cursor_cond}
         ORDER BY id ASC
         LIMIT %s
         {lock_clause}
         """
         with conn.cursor() as cur:
-            cur.execute(sql, (task.customer_id, task_match_value, limit))
+            params = [task.customer_id, task_match_value]
+            if after_id is not None:
+                params.append(int(after_id))
+            params.append(limit)
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall() or []
 
         return [self._row_to_mid_record(row, task=task) for row in rows]

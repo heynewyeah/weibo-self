@@ -17,6 +17,8 @@ def make_worker():
     worker.logger = MagicMock()
     worker.repo = MagicMock()
     worker.pipeline = MagicMock()
+    worker.retry_store = MagicMock()
+    worker.retry_store.eligible.return_value = True
     worker.stats = WorkerStats()
     return worker
 

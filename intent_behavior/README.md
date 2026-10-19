@@ -102,6 +102,32 @@ python3 worker.py --config config/config.yaml --once
 
 默认 worker 行为：持续查询有效任务 → 处理 `level=0` → 回写 → 等待 10 秒 → 下一轮。空轮询不输出逐任务日志或审计汇总，每 30 分钟输出一条空闲心跳（由 `worker.idle_heartbeat_sec` 配置）；有待处理记录时照常输出处理过程与汇总，错误和告警仍立即输出。`--once` 只运行一轮后退出，并打印本轮汇总。
 
+### 单条失败留存与有限重试
+
+- 技术失败仍保持业务 `level=0`，不写成成功或 `level=6`。首次处理失败后**最多额外重试 3 次，总共最多 4 次**；`worker.max_retries` 可设为 0～3。默认间隔为 60 / 300 / 1800 秒（`worker.retry_delays_sec`），到期后由轮询执行，不阻塞其他博文。
+- 正式 worker 将反解、模型 API、回写客户端的内层 `max_retry` 统一设为 1，避免多层重试相乘。每次完整链路可包含不同业务阶段的请求，但各阶段不再自行重复重试。手工排障脚本仍使用自身的配置，不受自动预算控制。
+- 达到上限后停止自动消费该记录，冷却/已隔离记录不生成反复处理的日志或审计；分页越过这些记录，避免前 100 条失败占满查询结果，阻塞后面的正常数据。
+- 第一次失败就保存完整任务、分表原始行、每次尝试输入、错误与异常栈、可获得的完整反解响应、反解结果、模型输出、耗时及回写状态/响应。JSON 档案不做正文、错误或模型输出截断；不复制媒体二进制文件，也不保存数据库密码或配置密钥。
+- 默认档案：`logs/failures/<记录标识的 SHA256>.json`；每条一份，最多 4 次自动尝试的历史合并其中，不逐轮制造新文件。状态与完整详情的原子备份：`logs/failures/retry_state.sqlite3`。JSON 文件和 SQLite 文件权限为 0600。目录随 `audit.dir` 的父目录定位：例如 `logs/runs` 对应 `logs/failures`。
+- 预算在接口调用前写盘，进程崩溃也不会重置预算；崩溃时尚未返回的结果不能凭空补齐，但已保存输入与预占次数。Ctrl+C/SIGTERM 正常走中断路径时不消耗重试次数。首次即成功的记录不会生成失败档案。重试后成功的历史档案保留，状态改为 `resolved`。
+- 预算跨同一持久目录中的进程重启、跨天保留，不自动清零、不随 JSONL 的 30 天清理删除。**不要删除 `logs/failures` 来清理普通日志**，否则会丢失重试预算。多主机/临时 DataWorks 工作目录不能共享本地预算；迁移或重建运行目录必须完整保留该目录，临时容器需挂载持久存储，不能仅依赖 HDFS 日志归档来恢复预算。
+- 无法写入重试预算或完整档案时，停止 worker；JSON 导出失败时详情仍保存在 SQLite。基础设施查询异常连续 3 轮退出，避免环境故障无限刷日志。
+- 日/周/月机器人报告增加失败档案目录、本窗口新增停止数、当前累计预算耗尽/等待数和样例文件位置；**不发送原始博文或模型输出**。状态读取为只读，状态损坏不会导致整份报告失败。历史审计不回改，预算从部署此版本后的首次处理开始计数。
+
+上线时先在原运行窗口按 Ctrl+C 停止旧 worker（若由调度平台管理，应停止旧实例并通过原入口重启），再更新代码。必须重启 worker 才能启用新预算；日报 cron 无需重装。不要在旧实例仍运行时另起一份：旧版本不遵守新预算。
+
+```bash
+# 离线测试：不连接 MySQL、不调用模型、不回写、不发送钉钉
+python3 -m unittest tests.test_worker_retry tests.test_worker_idle_logging \
+  tests.test_production_guards tests.test_weekly_report tests.test_dingtalk_report_schedule -v
+
+# 正式持续消费：会调用业务接口/模型并真实回写；在停止旧实例后执行
+python3 worker.py --config config/config.yaml
+
+# 报告只预览，不发送消息
+python3 scripts/send_weekly_report.py --period daily --dry-run
+```
+
 更完整的运行说明见 [docs/production_runbook.md](docs/production_runbook.md)；假期值守、错误定位和单条复测见 [docs/holiday_troubleshooting.md](docs/holiday_troubleshooting.md)。
 
 ## 7. 审核与 Case 排查地图
@@ -111,7 +137,7 @@ python3 worker.py --config config/config.yaml --once
 | 某 task 没被消费 | `super_mid_task`、`operator_uid`、分表路由 | `scripts/production_preflight.py` |
 | 某 mid 为什么是某层级/其他 | JSONL 的 `run_id`、`mid_processed` 的 `model_output`/`forward_status` | `scripts/manual_classify_mid.py --task-id <id> --mid <mid>` |
 | 回写超时却怀疑已落库 | 分表该 mid 的 `level`、审计 `error_stage=writeback` | `scripts/manual_classify_mid.py`（先不回写预演） |
-| 反解/媒体/模型失败 | JSONL 的 `error_stage`、`error`、耗时；分表应保持 `level=0` | 下一轮 worker 自动重试，或用 `scripts/manual_classify_mid.py` 手工复测 |
+| 反解/媒体/模型失败 | `logs/failures/*.json` 完整档案及 JSONL 的 `error_stage`；分表保持 `level=0` | 最多自动重试 3 次；达到上限后人工排查，可用 `scripts/manual_classify_mid.py` 受控复测 |
 | 旧版本误把中断写成 6 | 先确认审计和人工判断 | `scripts/manual_classify_mid.py --retry-level-6 --write-back` |
 | 回归关键业务保护 | 不连库、不调模型的离线测试 | `python3 -m unittest tests.test_production_guards -v` |
 | 模型连通性 | 模型服务状态（当前为 KServe 网关） | `python3 check_model_service.py` |
