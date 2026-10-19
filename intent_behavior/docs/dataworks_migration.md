@@ -1,9 +1,11 @@
 # Dataworks 迁移记录（2026-10-16）
 
-## 当前状态（2026-10-19 切换验证中）
+## 当前状态（2026-10-19 已启动持续消费与只读监控）
 
-用户已确认旧 worker 停止，并授权继续切换。Dataworks 工作流目前仍未上线，
-先验证少量真实 HTTP 回写，再启动前台常驻 worker。不能将“验证完成”视为生产已切换。
+用户确认旧 worker 已停止，随后要求跳过现有反解失败样本的回写验证，继续迁移并实现随时监控。
+正式工作流已保存为“已上线”，Cron 为 `0 0/5 * * * ?`，检查上一个实例未完成=是，提交失败重试=串行。
+正式 worker 于11:33:34启动；当前仅一条正式消费路径，已持续发布运行心跳、日志与重试状态。
+本次待处理记录反解返回30004，未发生真实回写；不能把运行心跳视为业务回写已经验证。
 
 工作流：原生内容站博文分类，ID `928f2456-7163-4191-87bb-4d63fad55cd0`。
 正式自定义Shell：`intent_behavior_worker`，ID `10B7820D-FD00-D14F-33EB-185B78DDA5D0`。
@@ -21,18 +23,77 @@ DAG 已移除旧普通 SHELL 和诊断节点，仅保留正式 worker；诊断�
 - HDFS 可写根为 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`。
   已实测归档上传、下载和解包；真实图文审计在 `validation/dry_run_8f2b876.tar.gz`。
 - 当前部署包必须包含 10 月 19 日新增的重试预算和完整失败档案逻辑，不能继续使用旧 `8f2b876` 包。
-- 离线保护测试共 52 项通过；包含重建目录后恢复 exhausted 预算、路径重定位、状态访问失败时拒绝启动。
+- 离线保护测试共56项通过，包含心跳过期识别、监控只读查询、完整失败档案、重试预算恢复和生产保护。
+- 10月19日正式工作流实例 `18A52017-96A0-43F9-D55B-5B103520C463`，节点实例
+  `B1EC3AE4-615F-CDF1-1F59-1A887C96F2CA`，主机 `10.25.1.228`。
+  环境包从原预检资源复制到自有HDFS runtime目录并校验成功；Python3.11.17与依赖检查通过。
+  观察到 `DATAWORKS_RETRY_STATE_NEW`、`DATAWORKS_RETRY_STATE_SYNCED` 和周期 `DATAWORKS_HEARTBEAT`。
+- 只读监控实例 `6C970288-6A3A-CE04-370A-4B8F602AAA2C` 在 `10.185.13.61` 返回代码0。
+  实际显示心跳距今31.8秒、轮询34轮、18个任务、累计8次反解失败尝试、4条等待重试，并打印最近20行日志。
+  启动脚本已修复容器旧版Bash对 `set -u` 下空数组的兼容问题。
+- 重新读取工作流配置确认已上线；查看运行历史时只有11:33:34这一条进行中实例，未见重复worker。
+  尚未主动验证强杀后的自动恢复、平台最长运行时长及真实回写成功。
 
 ### 正式 Shell
 
 ```bash
 #!/bin/bash
 set -euo pipefail
-export DATAWORKS_LOG_HDFS='viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks/logs'
-export DATAWORKS_STATE_HDFS='viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks/state/retry_state.sqlite3'
-export DATAWORKS_LOG_SYNC_SEC=60
-exec bash intent_behavior_dataworks/app/scripts/dataworks_bundle_start.sh
+exec bash intent_behavior_release/app/scripts/dataworks_cshell_entry.sh worker
 ```
+
+正式节点当前源码包 `intent_behavior_release_monitor_20261019.zip`，基于提交 `ec1f3c2`；
+SHA256 `14df680234a991bdd5299ad8cde9abae0ed9f6bc9030e0c35591aa1adc9a3674`。
+启动器使用新源码，但Python离线环境从自有HDFS `runtime/environment_20261016.zip` 下载；
+环境SHA256 `7c4446c525d3edb6b2b403a9e207e283ea80935c6e29d26b5bb857e2e9d1cfd4`。
+旧8f2b876依赖引用仍显示在页面，实际文件不存在且未使用；当前启动成功不依赖该文件。
+后续不要删除原预检环境资源或自有runtime副本来清理日志。
+
+### 随时查看监控
+
+[打开独立运行监控任务](http://dataworks.sina.com.cn/#/machine-learning/cshell/task/detail?defID=1BC74F3E-5DD3-E49A-2588-6C5955B59203&projectID=62607430-a984-423a-b94d-214393878a7f&type=cshell)。
+中文名“原生内容站运行监控”，内部名保留 `intent_behavior_dataworks_probe`，位于默认公共项目，未接入正式DAG。
+操作：单次提交（日期无需调整）→运行历史→最新实例→正常输出，滚动到日志末尾。
+每次提交读取当前HDFS状态；以前已完成的监控实例是历史快照，不会随worker更新。
+
+可查看心跳、主机/PID、累计处理尝试、最近轮询、等待/耗尽重试数、最近错误和日志尾部。
+心跳目标60秒更新（加归档耗时），180秒未更新标记过期；累计数是尝试次数，不是唯一博文数。
+提交弹窗“自定义环境变量”添加 `MONITOR_MID=<博文MID>`，可查看完整失败档案；
+可另加 `MONITOR_TASK_ID=<任务ID>`。不传MID时显示运行概况。
+监控不连接业务MySQL、不调用模型、不回写；启动器会准备离线环境并检查运行环境。
+
+监控节点使用兼容修复提交 `198562f` 的包 `intent_behavior_release_monitor_v2_20261019.zip`，
+ZIP目录为 `intent_behavior_release_v2`（避免与旧包解压目录冲突），SHA256为
+`6e601e485b3f43e4647bfdeec5c2fc17b447162ae56530679aab0802aca53c66`。
+网页Shell为：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+exec bash intent_behavior_release_v2/app/scripts/dataworks_cshell_entry.sh monitor
+```
+
+HDFS根目录 `viewfs://c9/user_ext/ads_fst/intent_behavior_dataworks`：
+
+- `logs/status.json`：最新状态，周期覆盖。
+- `logs/20261019_113416_fa0df2c2730c49d4ada5897b6cc4bf32.tar.gz`：当前实例完整日志归档，周期覆盖。
+- `state/retry_state.sqlite3`：一致的重试状态副本，新容器消费前恢复。
+- `runtime/environment_20261016.zip`：已复制的离线运行环境。
+
+服务器具备HDFS客户端和 `ads_fst` 权限、仓库已更新时，新的执行命令（只读，Ctrl+C只退出查看）：
+
+```bash
+cd intent_behavior && python3 scripts/dataworks_monitor.py --watch --interval 30
+```
+
+按MID查询（只读，把MID替换为目标值）：
+
+```bash
+cd intent_behavior && python3 scripts/dataworks_monitor.py --mid 5354439580059623
+```
+
+已有日报/周报/月报的cron仍读旧服务器本地审计目录，尚未接入HDFS新归档；不要用它判断迁移后完整处理量。
+当前上线的是持续消费、实时查看和失败档案查询；报告发送链路未迁移，未发送任何消息。
 
 重试预算通过 SQLite backup 保存一致副本；新容器启动前从 HDFS 恢复，重建失败档案 JSON 并修正旧容器绝对路径。
 周期同步及正常退出会保存预算。主机崩溃或强制 kill 仍可能丢失最后一个同步周期内的预算，不能声称跨崩溃绝对只重试 3 次。
@@ -95,8 +156,7 @@ bash intent_behavior_dataworks/app/scripts/dataworks_bundle_start.sh --check
 bash intent_behavior_dataworks/app/scripts/dataworks_bundle_start.sh --preflight
 ```
 
-正式脚本必须在数据库授权、HDFS 归档权限和完整业务验证通过后填入已验证的 `DATAWORKS_LOG_HDFS`，
-再调用不带参数的 `dataworks_bundle_start.sh`。不得用未经验证的目录占位直接上线。
+正式入口以上方当前配置为准，已内置验证过的HDFS目录。以下段落记录原始部署约束。
 每轮结束等待 10 秒沿用配置；Cron 的 5 分钟只是尝试创建实例的间隔，不提供 10 秒故障恢复保证。
 工作流 Cron `0 0/5 * * * ?`，检查上一个实例未完成=是，超时kill=0，调度提交失败重试=串行。
 这些设置仍需验证“失败后下一次触发”和平台最大运行时长，不保证可连续运行数周。
@@ -115,5 +175,5 @@ bash intent_behavior_dataworks/app/scripts/dataworks_bundle_start.sh --preflight
 这不把单条模型技术失败当成业务 level=6。单条技术失败仍保留原有重试及审计逻辑。
 
 切换顺序：数据库预检通过 → 合成模型/媒体验证通过 → HDFS 审计验证通过 →
-确认旧进程已退出 → 目标少量真实分类及 HTTP 回写验证 → 仅上线一条正式路径 →
+确认旧进程已退出 → 目标少量真实分类及 HTTP 回写验证（本次用户要求跳过现有失败样本）→ 仅上线一条正式路径 →
 验证停止/重启、Cron 跳过未结束实例和崩溃后恢复。验证失败保留旧服务器方案，不同时长期运行两个 worker。
