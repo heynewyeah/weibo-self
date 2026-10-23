@@ -43,6 +43,7 @@ class ImageHandler:
         self.max_images = max(1, int(config.get("max_images_per_request", 3)))
         self.logger = logger or logging.getLogger(__name__)
         self.storage_config = storage_config or {}
+        self.cache_dir = os.path.abspath(os.path.join(PROJECT_ROOT, config.get("cache_dir", DEFAULT_CACHE_DIR)))
 
     def pid_to_url(self, pid: str) -> str:
         """
@@ -139,7 +140,7 @@ class ImageHandler:
     def download_images_by_pids(self, pids: List[str],
                                 tmp_dir: str = None) -> List[str]:
         if tmp_dir is None:
-            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images")
+            tmp_dir = os.path.join(self.cache_dir, "blog_images")
         """
         批量下载图片
 
@@ -210,6 +211,7 @@ class VideoHandler:
         self.video_mode = config.get("video_mode", "cover")
         self.logger = logger or logging.getLogger(__name__)
         self.storage_config = storage_config or {}
+        self.cache_dir = os.path.abspath(os.path.join(PROJECT_ROOT, config.get("cache_dir", DEFAULT_CACHE_DIR)))
 
     def get_video_info(self, media_id: str, customer_id: str = None) -> Dict[str, str]:
         """
@@ -371,7 +373,7 @@ class VideoHandler:
     def extract_frames(self, video_path: str, num_frames: int = None,
                        output_dir: str = None) -> List[str]:
         if output_dir is None:
-            output_dir = os.path.join(DEFAULT_CACHE_DIR, "video_frames")
+            output_dir = os.path.join(self.cache_dir, "video_frames")
         """
         使用 OpenCV 从视频中均匀抽取关键帧
 
@@ -457,7 +459,7 @@ class VideoHandler:
     def process_video_cover(self, media_id: str, customer_id: str = None,
                             tmp_dir: str = None) -> List[str]:
         if tmp_dir is None:
-            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "video_covers")
+            tmp_dir = os.path.join(self.cache_dir, "video_covers")
         """
         方案A（cover）：获取封面图 → 下载 → 返回封面图路径列表
 
@@ -487,7 +489,7 @@ class VideoHandler:
     def process_video_frames(self, media_id: str, customer_id: str = None,
                              tmp_dir: str = None) -> List[str]:
         if tmp_dir is None:
-            tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "video_frames")
+            tmp_dir = os.path.join(self.cache_dir, "video_frames")
         """
         方案B（frame）：获取视频URL → 下载视频 → OpenCV抽帧 → 返回帧路径列表
 

@@ -2,6 +2,7 @@
 
 > 最后更新：2026-09-16
 > 正式持续入口：`python3 worker.py --config config/config.yaml`
+> 固定汽车任务 888888 独立入口：`python3 worker_special_task.py --config config/config.yaml`，见 [运行说明](docs/special_task_888888.md)。
 
 本项目消费原生内容站 MySQL 任务和待处理博文，完成 mid 反解、转发处理、媒体理解、AI 分层，并通过 HTTP 接口回写 level。
 

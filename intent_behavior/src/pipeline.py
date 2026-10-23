@@ -151,6 +151,9 @@ class ClassifyPipeline:
         error_log_dir: str = DEFAULT_LOG_DIR,
     ):
         self.config = config
+        self.cache_dir = os.path.abspath(os.path.join(
+            PROJECT_ROOT, config.get("media", {}).get("cache_dir", DEFAULT_CACHE_DIR)
+        ))
         self.logger = logger or logging.getLogger(__name__)
         self.error_log_dir = error_log_dir
         logging_cfg = config.get("logging", {})
@@ -405,7 +408,7 @@ class ClassifyPipeline:
         cleaned = []
 
         # 1. 图片临时目录（以 mid 命名的子目录）
-        img_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images", mid)
+        img_dir = os.path.join(self.cache_dir, "blog_images", mid)
         if os.path.exists(img_dir):
             try:
                 shutil.rmtree(img_dir)
@@ -417,7 +420,7 @@ class ClassifyPipeline:
         if video_fid:
             safe_fid = video_fid.replace(":", "_")
 
-            cover_path = os.path.join(DEFAULT_CACHE_DIR, "video_covers", f"cover_{safe_fid}.jpg")
+            cover_path = os.path.join(self.cache_dir, "video_covers", f"cover_{safe_fid}.jpg")
             if os.path.exists(cover_path):
                 try:
                     os.remove(cover_path)
@@ -425,7 +428,7 @@ class ClassifyPipeline:
                 except Exception as e:
                     self.logger.warning(f"清理视频封面失败 {cover_path}: {e}")
 
-            video_path = os.path.join(DEFAULT_CACHE_DIR, "video_frames", f"video_{safe_fid}.mp4")
+            video_path = os.path.join(self.cache_dir, "video_frames", f"video_{safe_fid}.mp4")
             if os.path.exists(video_path):
                 try:
                     os.remove(video_path)
@@ -433,7 +436,7 @@ class ClassifyPipeline:
                 except Exception as e:
                     self.logger.warning(f"清理视频文件失败 {video_path}: {e}")
 
-            frames_dir = os.path.join(DEFAULT_CACHE_DIR, "video_frames", f"frames_{safe_fid}")
+            frames_dir = os.path.join(self.cache_dir, "video_frames", f"frames_{safe_fid}")
             if os.path.exists(frames_dir):
                 try:
                     shutil.rmtree(frames_dir)
@@ -447,11 +450,11 @@ class ClassifyPipeline:
     def _cleanup_expired_cache(self):
         """启动时清理过期缓存，异常中断遗留的媒体文件不会无限堆积。"""
         retention_hours = float(self.config.get("media", {}).get("cache_retention_hours", 24))
-        if retention_hours <= 0 or not os.path.isdir(DEFAULT_CACHE_DIR):
+        if retention_hours <= 0 or not os.path.isdir(self.cache_dir):
             return
         cutoff = time.time() - retention_hours * 3600
         removed = 0
-        for root, dirs, files in os.walk(DEFAULT_CACHE_DIR, topdown=False):
+        for root, dirs, files in os.walk(self.cache_dir, topdown=False):
             for filename in files:
                 path = os.path.join(root, filename)
                 try:

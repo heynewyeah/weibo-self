@@ -53,14 +53,17 @@ class BlogClassifier:
         self.industry_rules = classification_cfg.get("industry_rules", {})
         # 粗行业 -> 可执行完整多模态分层的候选行业映射（如 美食 -> 奶茶）
         self.infer_refine_map = classification_cfg.get("infer_refine_map", {})
+        self.cache_dir = os.path.abspath(os.path.join(
+            PROJECT_ROOT, config.get("media", {}).get("cache_dir", DEFAULT_CACHE_DIR)
+        ))
 
         self.image_handler = ImageHandler(
-            config["media"]["image"],
+            dict(config["media"]["image"], cache_dir=self.cache_dir),
             self.logger,
             storage_config=config.get("storage", {}),
         )
         self.video_handler = VideoHandler(
-            config["media"]["video"],
+            dict(config["media"]["video"], cache_dir=self.cache_dir),
             self.logger,
             storage_config=config.get("storage", {}),
         )
@@ -467,7 +470,7 @@ class BlogClassifier:
             result.media_type = "image_fallback_text"
             return result
 
-        tmp_dir = os.path.join(DEFAULT_CACHE_DIR, "blog_images", item.mid)
+        tmp_dir = os.path.join(self.cache_dir, "blog_images", item.mid)
         image_paths = self.image_handler.download_images_by_pids(pids, tmp_dir)
 
         if not image_paths:
