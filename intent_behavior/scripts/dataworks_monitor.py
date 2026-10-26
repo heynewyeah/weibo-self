@@ -36,7 +36,8 @@ def show(status, tail=20):
     health, age = assess(status)
     worker = status.get("worker", {})
     print("=" * 70)
-    print("Dataworks 原生内容站分类：" + health + "；归档心跳距今 " + str(age) + " 秒")
+    title = "Dataworks 特殊任务888888" if status.get("task_id") == 888888 else "Dataworks 原生内容站分类"
+    print(title + "：" + health + "；归档心跳距今 " + str(age) + " 秒")
     print("主机=" + str(status.get("host")) + "；PID=" + str(status.get("pid")) +
           "；退出码=" + str(status.get("exit_code")))
     print("本次进程累计=" + json.dumps(worker.get("counts", {}), ensure_ascii=False))

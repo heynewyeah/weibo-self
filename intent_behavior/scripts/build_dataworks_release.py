@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.prefix):
         parser.error("prefix只能包含字母、数字、下划线和连字符")
-    paths = [PROJECT / name for name in ("worker.py", "run_dataworks.sh", "config/config.yaml", "check_model_service.py")]
+    paths = [PROJECT / name for name in ("worker.py", "worker_special_task.py", "run_dataworks.sh", "config/config.yaml", "check_model_service.py")]
     paths += list((PROJECT / "src").glob("*.py"))
     paths += list((PROJECT / "scripts").glob("*.py"))
     paths += [PROJECT / "scripts/dataworks_bundle_start.sh", PROJECT / "scripts/dataworks_cshell_entry.sh"]

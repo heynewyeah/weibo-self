@@ -169,3 +169,53 @@ Git 历史确认：2026-09-16 的 `0d97a73` 将回写地址从 `http://10.133.6.
 - 服务器测试日志和审计根目录：`/tmp/special-888888-paired-c7l_3z86/`，三个案例分别在 `new_source1`、`old_source1`、`old_source0` 下的 `special_888888/`。临时目录可能被系统清理，关键响应与查库结果已记录在本节。
 
 后续正式验证仍按单条执行：正式库出现任务 888888 的 level=0 样本后，先预演，再真实回写并核对来源表。当前无需再次切换公共配置。
+
+## 独立 DataWorks 发布（2026-10-26）
+
+特殊任务使用独立工作流和自定义Shell节点 `intent_behavior_special_888888`，不加入普通工作流，
+不更新普通 Worker 的已部署源码包、Shell、调度或重试状态。正式配置保持上文的新库和新域名。
+测试库两条样本已完成分类、HTTP回写和独立查库；这不等于新库已有真实回写样本。
+
+### 发布与目录隔离
+
+- 源码发布包和完整环境包均包含 `worker_special_task.py`、`src/special_task_worker.py`。
+- `dataworks_cshell_entry.sh special` 通过 `run_dataworks.sh --special` 启动监督器 `--entry special`，
+  监督器只启动 `worker_special_task.py`；普通 `worker` 模式默认值保持原样。
+- 特殊任务本地日志为 `logs/special_888888/special_worker.log`，心跳为同目录 `live_worker.json`，
+  审计为 `runs/`，重试及完整失败档案为 `failures/`；媒体缓存为 `output/.cache_special_888888/`。
+- 设置 `DATAWORKS_DATA_ROOT` 为原个人项目的 `.../intent_behavior/dataworks` 后，特殊模式自动追加
+  `/special_888888`。独立HDFS根为 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/special_888888`，
+  其下 `logs/status.json`、`logs/*.tar.gz`、`state/retry_state.sqlite3` 均独立。
+  特殊监督器拒绝普通 HDFS 路径，消费前恢复独立重试状态，归档失败的保护沿用普通入口。
+- `special-monitor` 只读取特殊HDFS根，不连接业务数据库、不分类、不回写。普通 `monitor` 的默认根不变。
+
+在服务器仓库根目录构建源码包（仅本地打包，不访问业务服务、不上传）：
+
+```bash
+cd intent_behavior && python3 scripts/build_dataworks_release.py --prefix intent_behavior_special_888888_v1 --output output/dataworks/intent_behavior_special_888888_20261026.zip
+```
+
+将该ZIP上传到**新特殊任务节点**的依赖包，Python环境继续复用已验证的HDFS runtime包。
+发布包包含业务配置，只用于已授权的本项目DataWorks任务，不提交ZIP到Git。
+网页正式Shell（会持续分类并真实HTTP回写）：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+export DATAWORKS_DATA_ROOT='viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks'
+exec bash intent_behavior_special_888888_v1/app/scripts/dataworks_cshell_entry.sh special
+```
+
+环境检查时把末尾 `special` 改为 `check`（不分类、不回写）；单条预演可用
+`special --dry-run --limit 1`（调用真实反解/模型，不回写，不恢复或上传正式重试预算）。
+正式常驻入口不附加日期参数。新工作流建议Cron `0 0/5 * * * ?`、检查未完成实例=是、
+提交失败重试=串行；节点超时kill=1430分钟、节点自动重试关闭，沿用已验证的平台轮换方式。
+同一特殊工作流仅保留一个正式消费节点，监控独立单次执行。
+
+服务器具备HDFS客户端及权限时，只读持续监控（Ctrl+C只退出查看）：
+
+```bash
+cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/special_888888 --watch --interval 30
+```
+
+本节代码支持与发布包检查不代表平台已建任务或已上线；实机节点、实例和验证结果在实际部署后单独记录。

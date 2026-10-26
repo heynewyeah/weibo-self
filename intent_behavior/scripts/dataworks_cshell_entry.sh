@@ -29,7 +29,14 @@ case "${1:-worker}" in
     export DATAWORKS_STATE_HDFS="$DATA_ROOT/state/retry_state.sqlite3"
     export DATAWORKS_LOG_SYNC_SEC=60
     exec bash app/run_dataworks.sh ;;
-  monitor)
+  special)
+    shift
+    export DATAWORKS_LOG_HDFS="$DATA_ROOT/special_888888/logs"
+    export DATAWORKS_STATE_HDFS="$DATA_ROOT/special_888888/state/retry_state.sqlite3"
+    export DATAWORKS_LOG_SYNC_SEC=60
+    exec bash app/run_dataworks.sh --special "$@" ;;
+  monitor|special-monitor)
+    if [ "$1" = special-monitor ]; then DATA_ROOT="$DATA_ROOT/special_888888"; fi
     shift
     # Bash 4.2 treats an empty array as unbound under set -u.
     if [ -n "${MONITOR_MID:-}" ]; then set -- --mid "$MONITOR_MID" "$@"; fi
@@ -37,5 +44,5 @@ case "${1:-worker}" in
     exec "$PYTHON_BIN" -u app/scripts/dataworks_monitor.py --hdfs-root "$DATA_ROOT" "$@" ;;
   check)
     exec "$PYTHON_BIN" app/scripts/dataworks_runtime_check.py ;;
-  *) echo 'Usage: dataworks_cshell_entry.sh [worker|monitor|check]' >&2; exit 2 ;;
+  *) echo 'Usage: dataworks_cshell_entry.sh [worker|special|monitor|special-monitor|check]' >&2; exit 2 ;;
 esac

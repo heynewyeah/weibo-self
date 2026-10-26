@@ -42,7 +42,7 @@ def main():
         raise SystemExit("wheel 集合或哈希与 requirements.dataworks.lock 不匹配，拒绝打包")
     entries["requirements.dataworks.lock"] = locked
     # 明确白名单：不打包媒体、日志、导出数据、Git 或开发机虚拟环境。
-    paths = [PROJECT / n for n in ("worker.py", "run_dataworks.sh", "config/config.yaml", "check_model_service.py")]
+    paths = [PROJECT / n for n in ("worker.py", "worker_special_task.py", "run_dataworks.sh", "config/config.yaml", "check_model_service.py")]
     paths += list((PROJECT / "src").glob("*.py"))
     paths += list((PROJECT / "scripts").glob("*.py"))
     paths += [PROJECT / "scripts/dataworks_bundle_start.sh", PROJECT / "scripts/dataworks_cshell_entry.sh"]

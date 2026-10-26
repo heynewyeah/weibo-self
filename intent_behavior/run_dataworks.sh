@@ -14,20 +14,36 @@ export DATAWORKS_MAX_LOOP_ERRORS="${DATAWORKS_MAX_LOOP_ERRORS:-3}"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 export PYTHONNOUSERSITE=1
+ENTRY=worker.py
+SUPERVISOR_ENTRY=worker
+if [ "${1:-}" = --special ]; then
+  shift
+  ENTRY=worker_special_task.py
+  SUPERVISOR_ENTRY=special
+  export DATAWORKS_SPECIAL_LOG_ROOT="$PROJECT_DIR/logs/special_888888"
+fi
 case "${1:-}" in
   --check)
     exec "$PYTHON_BIN" scripts/dataworks_runtime_check.py ;;
   --preflight)
     exec "$PYTHON_BIN" scripts/production_preflight.py --strict ;;
   --once)
-    exec "$PYTHON_BIN" -u worker.py --config config/config.yaml --once ;;
+    exec "$PYTHON_BIN" -u "$ENTRY" --config config/config.yaml "$@" ;;
+  --dry-run)
+    if [ "$SUPERVISOR_ENTRY" != special ]; then
+      echo '--dry-run 仅用于 --special 特殊入口' >&2; exit 2
+    fi
+    exec "$PYTHON_BIN" -u "$ENTRY" --config config/config.yaml "$@" ;;
   "") ;;
-  *) echo 'Usage: bash run_dataworks.sh [--check|--preflight|--once]' >&2; exit 2 ;;
+  *) echo 'Usage: bash run_dataworks.sh [--special] [--check|--preflight|--once|--dry-run [--limit N]]' >&2; exit 2 ;;
 esac
 
 "$PYTHON_BIN" scripts/dataworks_runtime_check.py
 # Dataworks 临时目录会被清理：由前台监督进程定期保存日志并转发终止信号。
 if [ -n "${DATAWORKS_LOG_HDFS:-}" ]; then
+  if [ "$SUPERVISOR_ENTRY" = special ]; then
+    exec "$PYTHON_BIN" -u scripts/dataworks_supervisor.py --entry special
+  fi
   exec "$PYTHON_BIN" -u scripts/dataworks_supervisor.py
 fi
-exec "$PYTHON_BIN" -u worker.py --config config/config.yaml
+exec "$PYTHON_BIN" -u "$ENTRY" --config config/config.yaml

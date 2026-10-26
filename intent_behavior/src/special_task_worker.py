@@ -29,6 +29,10 @@ def build_special_config(config: Dict[str, Any], dry_run: bool = False) -> Dict[
     log_root = os.path.abspath(os.path.join(
         PROJECT_ROOT, config.get("logging", {}).get("dir", "logs"), "special_888888"
     ))
+    if os.environ.get("DATAWORKS_SPECIAL_LOG_ROOT"):
+        log_root = os.path.abspath(os.path.join(PROJECT_ROOT, os.environ["DATAWORKS_SPECIAL_LOG_ROOT"]))
+        if log_root != os.path.join(PROJECT_ROOT, "logs", "special_888888"):
+            raise ValueError("DataWorks 特殊任务日志必须独立放在 logs/special_888888")
     isolated.setdefault("logging", {}).update(
         dir=log_root, error_file=os.path.join(log_root, "error_records.tsv"),
         result_file=os.path.join(log_root, "result.tsv"),

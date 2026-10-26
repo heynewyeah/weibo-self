@@ -16,7 +16,7 @@ if [ ! -f runtime/.dependencies_ready ]; then
     --find-links "$BUNDLE_DIR/wheels" -r requirements.dataworks.lock
   touch runtime/.dependencies_ready
 fi
-if [ "$#" -eq 0 ] && [ -z "${DATAWORKS_LOG_HDFS:-}" ]; then
+if { [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --special ]; }; } && [ -z "${DATAWORKS_LOG_HDFS:-}" ]; then
   echo '正式持续运行必须设置 DATAWORKS_LOG_HDFS，以免任务目录清理后丢失审计。' >&2
   exit 2
 fi
