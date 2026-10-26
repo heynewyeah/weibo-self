@@ -218,4 +218,32 @@ exec bash intent_behavior_special_888888_v1/app/scripts/dataworks_cshell_entry.s
 cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/special_888888 --watch --interval 30
 ```
 
-本节代码支持与发布包检查不代表平台已建任务或已上线；实机节点、实例和验证结果在实际部署后单独记录。
+### 实际部署与实机核验（2026-10-26 15:46）
+
+- 新工作流：`原生内容站特殊任务888888`，ID `fd119871-a55a-48cf-90e4-21939621abb0`。
+  [工作流与运行历史](http://dataworks.sina.com.cn/#/workflow/detail?projID=fd119871-a55a-48cf-90e4-21939621abb0&projName=原生内容站特殊任务888888&tab=runHistory)。
+- 工作流只有一个消费节点 `intent_behavior_special_888888`，中文名称 `原生内容站特殊汽车任务888888`；
+  运行用户 `ads_fst`，运行环境 `ext_hadoop-2.7.3_hive-2.3.7_spark-3.2.0_auron-7.0(推荐)`。
+- 已保存并刷新确认工作流**已上线**：Cron `0 0/5 * * * ?`、检查未完成实例=是、
+  调度提交失败重试=串行、代码类型=无、全局参数 `{}`。节点超时kill=1430分钟，节点自动重试关闭。
+  该设置沿用普通任务的平台轮换方式；本次没有等待满1430分钟，不能将配置核对当作新节点超时轮换已实测。
+- 上传包 `intent_behavior_special_888888_20261026.zip`，大小127984字节，代码基线 `192dada4be4dde6a76063099f574bfc3714cfc0a`。
+  SHA256：`cd2b0191c1b73b50ce1a74eb38e11179d6a9cf15fb11cd194966861ff53eff4e`。
+  依赖资源：`hdfs://wbml-streaming-ns/wbml_data/waic_scheduler/resource/226/202610/1793000170609/intent_behavior_special_888888_20261026.zip`。
+  使用上面的正式Shell，仅新特殊节点引用此包；普通Worker仍引用原发布包，未修改普通工作流。
+- 首个工作流实例 `4C7BD018-6631-B044-70E6-4DA8CCDB2DE7`，节点实例
+  `AB0B833F-DB1D-9DD8-84CA-D61D8E1992BC`，2026-10-26 15:38:13手动提交，运行主机 `10.185.13.63`。
+  15:46核对运行历史仍为共1条、状态进行中，跨过15:45调度点没有新增重叠实例。
+- 容器内Python3.11.17及离线依赖校验通过，`DATAWORKS_RUNTIME.ok=true`、`video_roundtrip=true`。
+  启动日志确认入口为888888，已获取独立 `logs/special_888888/worker.lock`，每轮间隔10秒。
+- 只读查看独立 `live_worker.json`：状态running，30轮完成，每轮 `tasks=1, shards=20, pending=0`，
+  累计成功、降级、失败、跳过均为0，`dry_run=false`。这证明正式库扫描正常，不证明新的真实分类或回写发生。
+- 标准输出首先出现 `DATAWORKS_RETRY_STATE_NEW`，随后多次 `DATAWORKS_RETRY_STATE_SYNCED`、
+  `DATAWORKS_LOG_SYNC_OK` 和running心跳。日志归档位于独立HDFS根下
+  `logs/20261026_153852_910311800fab4d6d8443bc25243560fa.tar.gz`，重试状态存入独立 `state/retry_state.sqlite3`。
+  本地 `logs/` 只产生 `special_888888/`；没有恢复普通Worker的历史重试预算。
+- 本地74项离线回归通过，覆盖特殊任务、发布包、监督器、监控、重试、生产保护及普通入口兼容；
+  Bash语法和Git差异格式检查通过。本次未重复处理已完成的测试库样本、未创建或修改生产样本。
+
+平台任务已启动，无需在旧服务器再启动第二个特殊Worker。查看使用上面的只读监控命令；
+源代码提交未自动push，平台使用的是本次已上传且校验过的发布包。
