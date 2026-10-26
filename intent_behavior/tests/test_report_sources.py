@@ -6,6 +6,7 @@
 import io
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -74,6 +75,20 @@ class FakeClient:
 
 
 class ReportSourceTests(unittest.TestCase):
+    def test_cache_uses_uid_sibling_not_a_foreign_private_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, client = Path(tmp), FakeClient(tmp)
+            old = root / "cache"
+            old.mkdir(mode=0o700)
+            (old / "sync.lock").write_text("foreign user's lock")
+            for uid in (111, 222):
+                with patch.object(sources.os, "geteuid", return_value=uid):
+                    with self.prepare(root, client) as prepared:
+                        self.assertEqual(root / f"cache_uid_{uid}", prepared.audit_dir.parents[1])
+            self.assertEqual("foreign user's lock", (old / "sync.lock").read_text())
+            self.assertTrue((root / "cache_uid_111/sync.lock").is_file())
+            self.assertTrue((root / "cache_uid_222/sync.lock").is_file())
+
     def prepare(self, root, client):
         return sources.prepare_report_inputs("dataworks_hdfs", client.day, client.day,
             legacy_dir=Path(root) / "legacy", cache_dir=Path(root) / "cache", client=client)
@@ -215,9 +230,28 @@ class ReportSourceTests(unittest.TestCase):
         with patch.object(sources.subprocess, "run", side_effect=FileNotFoundError()):
             with self.assertRaisesRegex(sources.ReportSourceError, "HDFS_RUNNER"):
                 sources.HdfsClient().status(sources.DEFAULT_HDFS_ROOT)
+        with patch.object(sources.subprocess, "run", side_effect=subprocess.CalledProcessError(
+                1, "hdfs", stderr="WARN noise\nPermission denied: user=wrong password=private-value\n")):
+            with self.assertRaises(sources.ReportSourceError) as error:
+                sources.HdfsClient().status(sources.DEFAULT_HDFS_ROOT)
+        self.assertIn("Permission denied", str(error.exception))
+        self.assertNotIn("private-value", str(error.exception))
 
 
 class SenderSourceFailureTests(unittest.TestCase):
+    def test_wrong_linux_account_stops_before_hdfs_cache_or_message(self):
+        config = {"enabled": True, "execution_user": "ads_fst"}
+        with patch("sys.argv", ["send", "--dry-run"]), \
+             patch.object(sender, "load_dingtalk_config", return_value=config), \
+             patch.object(sender.pwd, "getpwuid") as user, \
+             patch.object(sender, "prepare_report_inputs") as prepare, \
+             patch.object(sender, "send_report") as send:
+            user.return_value.pw_name = "xuanyu11"
+            with self.assertRaisesRegex(SystemExit, "su - ads_fst"):
+                sender.main()
+        prepare.assert_not_called()
+        send.assert_not_called()
+
     def test_dry_run_source_failure_shows_missing_data_and_never_sends(self):
         config = {"enabled": True, "robot_code": "test", "recipient_user_ids": ["test"]}
         output = io.StringIO()
@@ -251,9 +285,11 @@ class ReportCronTests(unittest.TestCase):
             cron = binary / "crontab"
             cron.write_text(f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\np=Path(os.environ['TEST_CRONTAB'])\nif sys.argv[1]=='-l': print(p.read_text(),end='')\nelse: p.write_text(sys.stdin.read())\n")
             cron.chmod(0o700)
-            env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"], TEST_CRONTAB=str(state))
+            env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
+                       TEST_CRONTAB=str(state), TMPDIR=str(root))
             installer = Path(sender.PROJECT_DIR) / "scripts/install_weekly_report_cron.sh"
-            command = ["bash", str(installer), "--project-dir", str(project), "--hdfs-runner", str(hdfs)]
+            command = ["bash", str(installer), "--project-dir", str(project),
+                       "--expected-user", pwd.getpwuid(os.geteuid()).pw_name, "--hdfs-runner", str(hdfs)]
             for _ in range(2):
                 subprocess.run(command, check=True, capture_output=True, text=True, env=env)
             result = state.read_text()
@@ -263,6 +299,17 @@ class ReportCronTests(unittest.TestCase):
             self.assertIn("CRON_TZ=Asia/Shanghai", result)
             subprocess.run(command[:-1] + [str(binary / "missing")], capture_output=True, env=env)
             self.assertEqual(result, state.read_text())
+            wrong_user = command + ["--expected-user", "not-the-current-user"]
+            rejected = subprocess.run(wrong_user, capture_output=True, env=env)
+            self.assertEqual(2, rejected.returncode, rejected.stderr.decode("utf-8", "replace"))
+            self.assertEqual(result, state.read_text())
+            removed = subprocess.run(wrong_user + ["--remove"], check=True, capture_output=True, text=True, env=env)
+            self.assertNotIn("scripts/send_weekly_report.py", state.read_text())
+            self.assertIn(unrelated, state.read_text())
+            backups = list(root.glob("intent-behavior-report-cron.*"))
+            self.assertEqual(1, len(backups))
+            self.assertEqual(result, backups[0].read_text())
+            self.assertIn(str(backups[0]), removed.stdout)
 
 
 class SenderProductionSourceTests(unittest.TestCase):

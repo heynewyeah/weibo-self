@@ -14,7 +14,10 @@
 #   cd intent_behavior
 #
 #   # 默认使用当前项目目录、python3 和 PATH 中的 dws
+#   # 必须先 su - ads_fst，脚本会核对当前 Linux 用户。
 #   bash scripts/install_weekly_report_cron.sh
+#   # 若误装进其他用户 crontab，仅备份并移除当前用户的本项目定时块：
+#   bash scripts/install_weekly_report_cron.sh --remove
 #
 #   # 指定远端项目路径、Python 和 dws 路径
 #   bash scripts/install_weekly_report_cron.sh \
@@ -36,6 +39,8 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="python3"
 DWS_RUNNER="dws"
 HDFS_RUNNER="${HDFS_RUNNER:-hdfs}"
+EXPECTED_USER="ads_fst"
+REMOVE_ONLY=false
 BLOCK_BEGIN="# BEGIN intent_behavior_dingtalk_report"
 BLOCK_END="# END intent_behavior_dingtalk_report"
 LEGACY_MARKER="# intent_behavior_weekly_dingtalk_report"
@@ -46,8 +51,10 @@ while [[ $# -gt 0 ]]; do
     --python) PYTHON_BIN="$2"; shift 2 ;;
     --dws-runner) DWS_RUNNER="$2"; shift 2 ;;
     --hdfs-runner) HDFS_RUNNER="$2"; shift 2 ;;
+    --expected-user) EXPECTED_USER="$2"; shift 2 ;;
+    --remove) REMOVE_ONLY=true; shift ;;
     -h|--help)
-      sed -n '1,31p' "$0"
+      sed -n '1,35p' "$0"
       exit 0
       ;;
     *)
@@ -57,9 +64,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+CURRENT_USER="$(id -un)"
+if [[ "$REMOVE_ONLY" == false && "$CURRENT_USER" != "$EXPECTED_USER" ]]; then
+  echo "必须以 ${EXPECTED_USER} 安装报告 cron，当前是 ${CURRENT_USER}。未修改 cron；请先 su - ${EXPECTED_USER}。" >&2
+  exit 2
+fi
+
 if [[ ! -f "$PROJECT_DIR/scripts/send_weekly_report.py" ]]; then
   echo "未找到 $PROJECT_DIR/scripts/send_weekly_report.py" >&2
   exit 2
+fi
+
+EXISTING="$(crontab -l 2>/dev/null || true)"
+FILTERED="$(
+  printf '%s\n' "$EXISTING" \
+    | sed "/^${BLOCK_BEGIN}$/,/^${BLOCK_END}$/d" \
+    | grep -Fv "$LEGACY_MARKER" \
+    || true
+)"
+if [[ "$REMOVE_ONLY" == true ]]; then
+  BACKUP_FILE="$(mktemp "${TMPDIR:-/tmp}/intent-behavior-report-cron.XXXXXX")"
+  chmod 600 "$BACKUP_FILE"
+  printf '%s\n' "$EXISTING" > "$BACKUP_FILE"
+  printf '%s\n' "$FILTERED" | crontab -
+  echo "已仅移除当前用户 $CURRENT_USER 的本项目报告定时块，其他任务保留。"
+  echo "原 crontab 可从备份恢复：$BACKUP_FILE"
+  exit 0
 fi
 
 mkdir -p "$PROJECT_DIR/logs"
@@ -71,13 +101,6 @@ HDFS_RUNNER="$HDFS_EXECUTABLE"
 CRON_TIMEZONE="CRON_TZ=Asia/Shanghai"
 CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && HDFS_RUNNER='$HDFS_RUNNER' DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
 
-EXISTING="$(crontab -l 2>/dev/null || true)"
-FILTERED="$(
-  printf '%s\n' "$EXISTING" \
-    | sed "/^${BLOCK_BEGIN}$/,/^${BLOCK_END}$/d" \
-    | grep -Fv "$LEGACY_MARKER" \
-    || true
-)"
 {
   printf '%s\n' "$FILTERED"
   printf '%s\n' "$BLOCK_BEGIN"

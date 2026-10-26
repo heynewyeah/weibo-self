@@ -70,6 +70,18 @@ class HdfsClient:
                                   text=True, timeout=min(90, remaining), env=env).stdout
         except FileNotFoundError as exc:
             raise ReportSourceError("未找到 HDFS 客户端；请设置 HDFS_RUNNER 为服务器 hdfs 的完整路径") from exc
+        except subprocess.CalledProcessError as exc:
+            # 仅保留可操作的错误摘要，不把整段 Hadoop 输出或潜在凭据发到机器人。
+            hints = ("permission denied", "accesscontrolexception", "no such file", "does not exist",
+                     "filenotfoundexception", "standbyexception", "unknownhostexception", "no filesystem",
+                     "java_home", "kerberos", "gssexception", "connection refused", "name or service not known")
+            detail = next((line.strip() for line in (exc.stderr or "").splitlines()
+                           if any(hint in line.lower() for hint in hints)), "")
+            detail = re.sub(r"(?i)((?:password|secret|access_token|refresh_token|delegation|authorization)\s*[:=]\s*)\S+",
+                            r"\1[REDACTED]", detail)[:400]
+            suffix = f"；摘要：{detail}" if detail else ""
+            raise ReportSourceError(f"HDFS {args[0]} 读取失败（退出码 {exc.returncode}）{suffix}；"
+                                    "请检查客户端、网络及 ads_fst 访问权限") from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise ReportSourceError(f"HDFS {args[0]} 读取失败；请检查客户端、网络及 ads_fst 访问权限") from exc
 
@@ -240,6 +252,9 @@ def prepare_report_inputs(source, start_day, end_day, *, legacy_dir=None, cache_
     if parsed.scheme not in ("viewfs", "hdfs") or not parsed.netloc or ".." in PurePosixPath(parsed.path).parts:
         raise ReportSourceError("无效 HDFS 根目录")
     cache_dir = Path(cache_dir) if cache_dir is not None else PROJECT / "logs/report_source"
+    # 缓存目录不能放在另一个用户创建的 0700 父目录内；使用同级 UID 隔离目录。
+    # 切换账号无需 chmod/chown 旧缓存，也不会沿用别人的锁或下载内容。
+    cache_dir = cache_dir.with_name(cache_dir.name + f"_uid_{os.geteuid()}")
     cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     client = client or HdfsClient(runner)
     with (cache_dir / "sync.lock").open("a") as lock:

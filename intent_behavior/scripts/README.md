@@ -29,7 +29,7 @@ python3 worker.py --config config/config.yaml
 
 项目报告使用钉钉“企业机器人”主动向个人单聊发送 Markdown。每天固定发 T-1 日报；周五另发当周汇总；月末最后一天另发当月汇总。各汇总与日报分开发送。
 
-正式报告默认先读取 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/logs/` 的心跳及实例归档，并与旧服务器审计去重合并。发送机器需要 HDFS 客户端及 `ads_fst` 的读取权限，`HDFS_RUNNER` 可指定完整路径。`--dry-run` 同样会读取 HDFS、写本地下载缓存，但不发消息、不触发业务处理。
+正式报告默认先读取 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/logs/` 的心跳及实例归档，并与旧服务器审计去重合并。安装和运行都必须使用 Linux 用户 `ads_fst`，不能在 `xuanyu11` 下安装另一份 cron；`HDFS_RUNNER` 可指定完整客户端路径。`--dry-run` 同样会读取 HDFS、写 UID 隔离的本地下载缓存，但不发消息、不触发业务处理。误装后可在错误用户下执行 `bash scripts/install_weekly_report_cron.sh --remove`，仅备份并移除该用户的本项目定时块；不要删除其他定时任务或 chmod 777 缓存。
 
 数据源过期/损坏/缺失时，不回退到陈旧本地审计，不发送零值统计；正式任务只发一条数据异常提示并非零退出。`--source local --dry-run` 仅用于人工排查。实现及缓存边界见 `report_sources.py` 和项目 README 的“钉钉定时项目报告”。
 

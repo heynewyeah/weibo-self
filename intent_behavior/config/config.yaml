@@ -411,6 +411,8 @@ notifications:
     enabled: true
     # 正式报告先合并 DataWorks HDFS 归档与旧服务器审计；禁止自动退回旧本地日志。
     data_source: dataworks_hdfs
+    # HDFS 权限、dws 登录与 cron 均使用该 Linux 账号，不能在 xuanyu11 下安装/运行。
+    execution_user: ads_fst
     hdfs_root: "viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks"
     # cron 找不到 hdfs 时，用 HDFS_RUNNER 环境变量或此处的完整路径覆盖。
     hdfs_runner: "hdfs"

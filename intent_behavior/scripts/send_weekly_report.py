@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pwd
 import shlex
 import subprocess
 import sys
@@ -292,6 +293,14 @@ def send_report(
 def main() -> None:
     args = parse_args()
     config = load_dingtalk_config(args.config)
+    source = args.source or config.get("data_source", "dataworks_hdfs")
+    expected_user = str(config.get("execution_user", "")).strip()
+    current_user = pwd.getpwuid(os.geteuid()).pw_name
+    if source != "local" and expected_user and current_user != expected_user:
+        raise SystemExit(
+            f"报告必须由 {expected_user} 运行，当前是 {current_user}。"
+            f"请先 su - {expected_user}；本次未读取 HDFS、未创建缓存、未发送消息。"
+        )
     if not bool(config.get("enabled", False)):
         raise SystemExit("钉钉报告已在 config.yaml 中关闭，未发送任何消息。")
 
@@ -310,7 +319,6 @@ def main() -> None:
     run_day = parse_run_date(args.run_date, timezone_name)
     reports = scheduled_reports(run_day, args.period)
     runner = shlex.split(os.getenv("DWS_RUNNER", "dws").strip() or "dws")
-    source = args.source or config.get("data_source", "dataworks_hdfs")
     if source == "local" and not args.dry_run:
         raise SystemExit("local 数据源仅允许 --dry-run 核对，禁止把旧服务器本地数据当成正式统计发送")
     hdfs_root = env_or_config("DINGTALK_REPORT_HDFS_ROOT", config.get("hdfs_root", DEFAULT_HDFS_ROOT))

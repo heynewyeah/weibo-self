@@ -181,9 +181,11 @@ HDFS 根目录为 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/datawor
 
 新入口每次调用只同步一次，供该次全部日/周/月报共用。选取可能与窗口相交的实例归档；按相同审计文件路径比较完整前缀，只保留较长快照，不重复追加；内容冲突则拒绝生成正常统计。旧服务器日志仅作为迁移前历史输入，不会在 HDFS 失败时用作自动降级来源。
 
-发送机器需有 `hdfs` 客户端及 `ads_fst` 的个人目录读取权限；可以用 `HDFS_RUNNER` 或通知配置中的 `hdfs_runner` 指定可执行文件。`--dry-run` 会从 HDFS 下载/校验并写入本地缓存，但不发钉钉消息，不访问模型或业务库，不修改 HDFS、原始日志或 Worker。同步按固定参数调用 HDFS CLI，单命令最多 90 秒，HDFS 调用总预算 300 秒。
+发送机器需有 `hdfs` 客户端及 `ads_fst` 的个人目录读取权限；可以用 `HDFS_RUNNER` 或通知配置中的 `hdfs_runner` 指定可执行文件。**安装 cron 和预览/发送报告都必须先切换到 Linux 用户 `ads_fst`**（通知配置 `execution_user`），不能在 `xuanyu11` 下执行；crontab、HDFS 身份、dws 登录和缓存所有权都是按用户隔离的。用错账号会在写缓存和发消息前明确拒绝。`--dry-run` 会从 HDFS 下载/校验并写入本地缓存，但不发钉钉消息，不访问模型或业务库，不修改 HDFS、原始日志或 Worker。同步按固定参数调用 HDFS CLI，单命令最多 90 秒，HDFS 调用总预算 300 秒。
 
-缓存仅在 `logs/report_source/`；临时合并快照结束后清理，45 天未使用的可重建下载缓存自动清理，HDFS 和原始日志不删除。当前实例归档每次重新下载，避免 HDFS 列表分钟精度导致复用旧内容。tar 只流式读取白名单 JSONL，禁止路径穿越/符号链接，不解包配置、媒体或原始失败正文。单归档 JSONL 解压上限 4GB。
+缓存按实际 UID 放在 `logs/report_source_uid_<UID>/`（在 `source_cache_dir` 的同级目录加 UID 后缀，不使用其他用户创建的 0700 父目录）。旧版 `logs/report_source/` 原样保留，不需要 chmod/chown，更不能 chmod 777。临时合并快照结束后清理，45 天未使用的可重建下载缓存自动清理，HDFS 和原始日志不删除。当前实例归档每次重新下载，避免 HDFS 列表分钟精度导致复用旧内容。tar 只流式读取白名单 JSONL，禁止路径穿越/符号链接，不解包配置、媒体或原始失败正文。单归档 JSONL 解压上限 4GB。
+
+若曾误装到 `xuanyu11` 的 crontab，先在 **xuanyu11 用户**下从仓库根目录执行 `cd intent_behavior && bash scripts/install_weekly_report_cron.sh --remove`；仅备份并移除本项目带标记的定时块，输出可恢复的备份位置，其他任务不变。然后 `su - ads_fst`，回到服务器仓库根目录，预览成功后重新安装报告 cron。不要执行 `crontab -r`，不要修改 HDFS 权限来掩盖账号用错的问题。
 
 报告增加 HDFS 目录、最新心跳、本次同步时间和归档数量。首尾窗口覆盖不足（容忍 15 分钟轮换/同步延迟）、心跳过期、HDFS 不可达、归档损坏或 JSONL 不完整时：预览明确显示“数据缺失”并返回非零；正式调度只发送一条“数据异常”提示，不发送零值统计，不使用陈旧缓存。该校验不宣称归档零丢失，也不能证明窗口内部没有停机间隙。
 
