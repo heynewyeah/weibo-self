@@ -29,6 +29,11 @@ def failure_directory(config):
 
 def record_key(record):
     identity = [str(record.customer_id), str(record.super_task_id), str(record.id), str(record.mid)]
+    source_shard = getattr(record, "source_shard", None)
+    if source_shard is not None:
+        # 特殊任务不再按 customer_id 分表；不同来源表可以出现相同主键和博文。
+        # 普通 MidRecord 没有该字段，历史重试键保持不变。
+        identity.append(f"source_shard:{source_shard}")
     return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
 
 

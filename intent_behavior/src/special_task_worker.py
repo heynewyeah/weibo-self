@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+from dataclasses import dataclass
 from typing import Any, Dict
 
 from .db_client import MidRecord, MySQLTaskRepository, TaskRecord
@@ -13,6 +14,13 @@ from .worker import MySQLShardWorker
 TASK_ID = 888888
 SHARD_PREFIX = "nature_ad_super_mid_"
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+@dataclass
+class SpecialMidRecord(MidRecord):
+    """特殊记录按实际来源表定位，不能从 customer_id 推导来源。"""
+
+    source_shard: int = -1
 
 
 def build_special_config(config: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
@@ -65,20 +73,51 @@ class SpecialTaskRepository(MySQLTaskRepository):
                 (TASK_ID, int(after_id), int(limit)),
             )
             rows = cur.fetchall() or []
-        records = [self._row_to_mid_record(row) for row in rows]
+        records = [SpecialMidRecord(**vars(self._row_to_mid_record(row)), source_shard=shard)
+                   for row in rows]
         for record in records:
             record.task_industry_name = "汽车"
         return records
 
+    @staticmethod
+    def _source_table(record: MidRecord) -> str:
+        shard = getattr(record, "source_shard", None)
+        if record.super_task_id != TASK_ID or type(shard) is not int or not 0 <= shard < 20:
+            raise ValueError("特殊任务必须有扫描时记录的合法来源分表，禁止按 customer_id 猜表")
+        return f"{SHARD_PREFIX}{shard}"
+
+    def _current_level(self, record: MidRecord):
+        table = self._source_table(record)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT level FROM {table} "
+                    "WHERE id = %s AND super_task_id = %s AND mid = %s LIMIT 1",
+                    (record.id, TASK_ID, record.mid),
+                )
+                row = cur.fetchone()
+        return int(row["level"]) if row is not None and row.get("level") is not None else None
+
     def is_pending(self, record: MidRecord) -> bool:
-        return record.super_task_id == TASK_ID and super().is_pending(record)
+        return record.super_task_id == TASK_ID and self._current_level(record) == 0
+
+    def confirm_level(self, record: MidRecord, expected_level: int) -> bool:
+        return self._current_level(record) == int(expected_level)
 
     def update_level_result(self, conn, record, result):
         if record.super_task_id != TASK_ID or record.level != 0 or record.customer_id <= 0:
             raise ValueError("特殊任务回写仅允许 task_id=888888、level=0 且 customer_id 有效的记录")
         if result.industry_name != "汽车":
             raise ValueError("特殊任务仅允许回写汽车行业分层")
-        return super().update_level_result(conn, record, result)
+        self._source_table(record)  # 在请求发出前验证来源，防止无来源记录产生外部回写。
+        state = super().update_level_result(conn, record, result)
+        # 特殊任务不能只信接口 data=1：接口可能仍按 customer_id 路由到别处。
+        if not self.confirm_level(record, state["level"]):
+            raise RuntimeError(
+                f"回写接口返回成功，但实际来源表 {self._source_table(record)} 未达到目标状态: "
+                f"id={record.id} mid={record.mid} target_level={state['level']}；停止扩大测试范围"
+            )
+        return state
 
 
 class SpecialTaskWorker(MySQLShardWorker):
@@ -96,10 +135,11 @@ class SpecialTaskWorker(MySQLShardWorker):
 
     def _valid_record(self, record, shard):
         valid = (record.super_task_id == TASK_ID and record.level == 0
-                 and record.customer_id > 0 and record.customer_id % 20 == shard)
+                 and record.customer_id > 0 and 0 <= shard < 20
+                 and getattr(record, "source_shard", None) == shard)
         if not valid:
             self.logger.error(
-                "特殊任务记录路由/范围不合法，跳过且不回写: shard=%s id=%s customer_id=%s task_id=%s level=%s",
+                "特殊任务记录来源/范围不合法，跳过且不回写: shard=%s id=%s customer_id=%s task_id=%s level=%s",
                 shard, record.id, record.customer_id, record.super_task_id, record.level,
             )
         return valid

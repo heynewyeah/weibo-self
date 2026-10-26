@@ -1,6 +1,8 @@
 """特殊任务范围、汽车链路、预演保护、分页及并行运行隔离；全部离线。"""
 
 import copy
+import hashlib
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -11,17 +13,21 @@ from src.classifier import DEFAULT_CACHE_DIR
 from src.mid_resolver import ResolvedBlog
 from src.models import ClassifyResult
 from src.pipeline import ClassifyPipeline, ProcessResult
-from src.retry_state import failure_directory
+from src.db_client import MySQLTaskRepository
+from src.retry_state import failure_directory, record_key
 from src.special_task_worker import (
-    TASK_ID, SpecialTaskRepository, SpecialTaskWorker, build_special_config, task_for_record,
+    TASK_ID, SpecialMidRecord, SpecialTaskRepository, SpecialTaskWorker, build_special_config,
+    task_for_record,
 )
 from src.worker import WorkerStats
 from tests.test_production_guards import make_record, minimal_config
 
 
-def special_record(row_id=1, customer_id=21):
-    return replace(make_record(), id=row_id, customer_id=customer_id, super_task_id=TASK_ID,
+def special_record(row_id=1, customer_id=21, source_shard=None):
+    base = replace(make_record(), id=row_id, customer_id=customer_id, super_task_id=TASK_ID,
                    task_industry_name="汽车")
+    return SpecialMidRecord(**vars(base), source_shard=(customer_id % 20 if source_shard is None
+                                                       else source_shard))
 
 
 def bare_worker(dry_run=False, limit=0):
@@ -107,6 +113,7 @@ class SpecialTaskTests(unittest.TestCase):
         self.assertEqual([], record.task_topic_values)
         self.assertEqual("原博", record.forward_text)
         self.assertEqual(21, record.customer_id)
+        self.assertEqual(1, record.source_shard)
         with self.assertRaises(ValueError):
             repo.fetch_special_pending(conn, 20, 2)
 
@@ -147,14 +154,62 @@ class SpecialTaskTests(unittest.TestCase):
         self.assertEqual([records[2]], worker._fetch_shard_batch(1, 2))
         self.assertEqual(2, worker.repo.fetch_special_pending.call_args.args[3])
 
-    def test_out_of_scope_nonzero_and_wrong_shard_rows_are_never_processed(self):
+    def test_out_of_scope_nonzero_and_wrong_source_rows_are_never_processed(self):
         worker = bare_worker()
         worker.repo.fetch_special_pending.side_effect = [[
             replace(special_record(), super_task_id=123), replace(special_record(), level=2),
-            replace(special_record(), customer_id=0), replace(special_record(), customer_id=22),
+            replace(special_record(), customer_id=0), replace(special_record(), source_shard=2),
         ], []]
         self.assertEqual([], worker._fetch_shard_batch(1, 4))
         worker.pipeline.process_one.assert_not_called()
+
+    def test_customer_modulo_does_not_filter_special_records(self):
+        worker = bare_worker()
+        record = special_record(customer_id=2608812382, source_shard=0)
+        worker.repo.fetch_special_pending.return_value = [record]
+        self.assertEqual([record], worker._fetch_shard_batch(0, 2))
+        self.assertTrue(worker._valid_record(record, 0))
+
+    def test_pending_and_confirmation_use_actual_source_not_customer_modulo(self):
+        cfg = minimal_config()
+        record = special_record(customer_id=2608812382, source_shard=0)
+        repo = SpecialTaskRepository(cfg["mysql"], app_config=cfg)
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        with patch.object(repo, "connect") as connect:
+            connect.return_value.__enter__.return_value = conn
+            cur.fetchone.return_value = {"level": 0}
+            self.assertTrue(repo.is_pending(record))
+            cur.fetchone.return_value = {"level": 2}
+            self.assertTrue(repo.confirm_level(record, 2))
+            self.assertFalse(repo.is_pending(record))
+            cur.fetchone.return_value = None
+            self.assertFalse(repo.is_pending(record))
+        for call in cur.execute.call_args_list:
+            sql, params = call.args
+            self.assertIn("FROM nature_ad_super_mid_0", sql)
+            self.assertNotIn("customer_id", sql)
+            self.assertEqual((record.id, TASK_ID, record.mid), params)
+
+    def test_normal_pending_query_still_uses_customer_modulo(self):
+        cfg = minimal_config()
+        repo = MySQLTaskRepository(cfg["mysql"], app_config=cfg)
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.fetchone.return_value = {"level": 0}
+        with patch.object(repo, "connect") as connect:
+            connect.return_value.__enter__.return_value = conn
+            self.assertTrue(repo.is_pending(make_record()))
+        self.assertIn(f"nature_ad_super_mid_{make_record().customer_id % 20}",
+                      cur.execute.call_args.args[0])
+
+    def test_special_retry_keys_include_source_and_normal_keys_are_unchanged(self):
+        record = special_record(source_shard=0)
+        self.assertNotEqual(record_key(record), record_key(replace(record, source_shard=2)))
+        normal = make_record()
+        identity = [str(normal.customer_id), str(normal.super_task_id), str(normal.id), str(normal.mid)]
+        self.assertEqual(hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest(),
+                         record_key(normal))
 
     def test_dry_run_has_no_writeback_or_retry_budget_side_effect(self):
         worker = bare_worker(dry_run=True)
@@ -191,13 +246,43 @@ class SpecialTaskTests(unittest.TestCase):
         repo.writer = MagicMock()
         repo.writer.update_level.return_value = {"code": 0, "data": 1}
         result = ClassifyResult("m", "u", "兴趣层", "text", success=True, industry_name="汽车")
-        repo.update_level_result(None, special_record(), result)
+        with patch.object(repo, "confirm_level", return_value=True):
+            repo.update_level_result(None, special_record(source_shard=0), result)
         kwargs = repo.writer.update_level.call_args.kwargs
         self.assertEqual((21, TASK_ID, 2), (kwargs["customer_id"], kwargs["task_id"], kwargs["level"]))
         for record in (replace(special_record(), super_task_id=7), replace(special_record(), level=1)):
             with self.assertRaises(ValueError):
                 repo.update_level_result(None, record, result)
         self.assertEqual(1, repo.writer.update_level.call_count)
+
+    def test_writeback_success_requires_actual_source_level_and_valid_source(self):
+        cfg = minimal_config()
+        repo = SpecialTaskRepository(cfg["mysql"], app_config=cfg)
+        repo.writer = MagicMock()
+        repo.writer.update_level.return_value = {"code": 0, "data": 1}
+        result = ClassifyResult("m", "u", "兴趣层", "text", success=True, industry_name="汽车")
+        with patch.object(repo, "confirm_level", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "实际来源表 nature_ad_super_mid_0"):
+                repo.update_level_result(None, special_record(source_shard=0), result)
+        for source in (-1, 20, "0; DROP TABLE x", None):
+            with self.assertRaises(ValueError):
+                repo.update_level_result(None, replace(special_record(), source_shard=source), result)
+        self.assertEqual(1, repo.writer.update_level.call_count)
+
+    def test_timeout_and_zero_update_confirmation_also_use_source_table(self):
+        cfg = minimal_config()
+        repo = SpecialTaskRepository(cfg["mysql"], app_config=cfg)
+        repo.writer = MagicMock()
+        record = special_record(source_shard=0)
+        result = ClassifyResult("m", "u", "兴趣层", "text", success=True, industry_name="汽车")
+        with patch.object(repo, "_current_level", return_value=2) as read:
+            repo.writer.update_level.side_effect = RuntimeError("timeout")
+            self.assertEqual("confirmed_after_transport_error",
+                             repo.update_level_result(None, record, result)["state"])
+            repo.writer.update_level.side_effect = None
+            repo.writer.update_level.return_value = {"code": 0, "data": 0}
+            self.assertEqual("already_applied", repo.update_level_result(None, record, result)["state"])
+            self.assertTrue(all(call.args == (record,) for call in read.call_args_list))
 
     def test_same_car_pipeline_can_classify_without_brand_or_task_table(self):
         cfg = minimal_config()
