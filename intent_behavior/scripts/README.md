@@ -22,11 +22,16 @@ python3 worker.py --config config/config.yaml
 | `count_xlsx_mids.py` | 查询 Excel 博文对应的 mid 并输出映射文件 | `python3 scripts/count_xlsx_mids.py --help` |
 | `generate_weekly_report.py` | 从 JSONL 运行审计生成指定日期范围的只读报告 | `python3 scripts/generate_weekly_report.py --start-date 2026-09-19 --end-date 2026-09-19 --report-name 日报` |
 | `send_weekly_report.py` | 按日历规则发送 T-1 日报、周五汇总和月末汇总 | `python3 scripts/send_weekly_report.py` |
+| `report_sources.py` | 只读同步 HDFS 审计、与旧日志去重合并、校验来源与窗口覆盖 | 由 `send_weekly_report.py` 调用，无独立发送入口 |
 | `install_weekly_report_cron.sh` | 安装/更新每天 10:00（含周末）的报告 cron | `bash scripts/install_weekly_report_cron.sh` |
 
 ## 钉钉企业机器人报告
 
 项目报告使用钉钉“企业机器人”主动向个人单聊发送 Markdown。每天固定发 T-1 日报；周五另发当周汇总；月末最后一天另发当月汇总。各汇总与日报分开发送。
+
+正式报告默认先读取 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks/logs/` 的心跳及实例归档，并与旧服务器审计去重合并。发送机器需要 HDFS 客户端及 `ads_fst` 的读取权限，`HDFS_RUNNER` 可指定完整路径。`--dry-run` 同样会读取 HDFS、写本地下载缓存，但不发消息、不触发业务处理。
+
+数据源过期/损坏/缺失时，不回退到陈旧本地审计，不发送零值统计；正式任务只发一条数据异常提示并非零退出。`--source local --dry-run` 仅用于人工排查。实现及缓存边界见 `report_sources.py` 和项目 README 的“钉钉定时项目报告”。
 
 企业机器人需在钉钉开发者后台完成以下步骤后才能启用发送：
 
@@ -50,6 +55,7 @@ python3 scripts/send_weekly_report.py
 bash scripts/install_weekly_report_cron.sh \
   --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
   --python /usr/bin/python3 \
+  --hdfs-runner "$(command -v hdfs)" \
   --dws-runner /usr/local/bin/dws
 ```
 

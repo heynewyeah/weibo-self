@@ -167,15 +167,40 @@ python3 scripts/cleanup_mysql_audit.py --execute
 
 ### 钉钉定时项目报告
 
-报告优先消费 `logs/runs/YYYYMMDD/*.jsonl`，因此不会将早期手工测试日志混入正式运行指标。定时规则为：
+正式发送入口先读取 DataWorks HDFS 日志归档，并合并旧服务器的 `logs/runs/YYYYMMDD/*.jsonl`，不再只看旧服务器的本地文件。不会将早期手工测试控制台日志混入正式运行指标。定时规则为：
 
 - 每天发送 T-1 日报；
 - 每周五额外、单独发送当周周一至周五的周汇总；
 - 每月最后一天额外、单独发送当月 1 日至当天的月汇总。
 
+HDFS 根目录为 `viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks`：
+
+- `logs/status.json`：最新运行心跳与当前实例归档位置；默认最多允许 900 秒延迟。
+- `logs/*.tar.gz`：各实例的日志快照，报告读取其中的 `logs/runs/YYYYMMDD/*.jsonl`。
+- `state/retry_state.sqlite3`：完整失败详情和重试预算的持久化备份，报告**不恢复/修改**该状态；重试数量只读自心跳。
+
+新入口每次调用只同步一次，供该次全部日/周/月报共用。选取可能与窗口相交的实例归档；按相同审计文件路径比较完整前缀，只保留较长快照，不重复追加；内容冲突则拒绝生成正常统计。旧服务器日志仅作为迁移前历史输入，不会在 HDFS 失败时用作自动降级来源。
+
+发送机器需有 `hdfs` 客户端及 `ads_fst` 的个人目录读取权限；可以用 `HDFS_RUNNER` 或通知配置中的 `hdfs_runner` 指定可执行文件。`--dry-run` 会从 HDFS 下载/校验并写入本地缓存，但不发钉钉消息，不访问模型或业务库，不修改 HDFS、原始日志或 Worker。同步按固定参数调用 HDFS CLI，单命令最多 90 秒，HDFS 调用总预算 300 秒。
+
+缓存仅在 `logs/report_source/`；临时合并快照结束后清理，45 天未使用的可重建下载缓存自动清理，HDFS 和原始日志不删除。当前实例归档每次重新下载，避免 HDFS 列表分钟精度导致复用旧内容。tar 只流式读取白名单 JSONL，禁止路径穿越/符号链接，不解包配置、媒体或原始失败正文。单归档 JSONL 解压上限 4GB。
+
+报告增加 HDFS 目录、最新心跳、本次同步时间和归档数量。首尾窗口覆盖不足（容忍 15 分钟轮换/同步延迟）、心跳过期、HDFS 不可达、归档损坏或 JSONL 不完整时：预览明确显示“数据缺失”并返回非零；正式调度只发送一条“数据异常”提示，不发送零值统计，不使用陈旧缓存。该校验不宣称归档零丢失，也不能证明窗口内部没有停机间隙。
+
+```bash
+# 预览 2026-10-25 日报：读取 HDFS 并写本地缓存，但不发送消息
+python3 scripts/send_weekly_report.py --period daily --run-date 2026-10-26 --dry-run
+
+# 仅人工核对旧服务器本地日志；local 禁止用于正式发送
+python3 scripts/send_weekly_report.py --period daily --run-date 2026-10-26 --source local --dry-run
+
+# 离线回归测试，不连接 HDFS/钉钉/业务系统
+python3 -m unittest tests.test_report_sources tests.test_weekly_report tests.test_dingtalk_report_schedule -v
+```
+
 统计时扫描所有保留的审计日期目录，以每条记录的 `event_time`（Asia/Shanghai）决定是否进入窗口及归属哪一天。长期 worker 的目录是启动日期，跨天记录仍可能写在旧目录，不再按目录日期过滤。无时区的历史时间按北京时间解释；缺少时间的旧记录兼容使用目录日期，时间格式损坏的记录告警并跳过。门户 JSON 聚合复用相同读取逻辑。
 
-更新报告脚本后，下一次 cron 会自动使用新逻辑，无需重启 worker 或重装 cron；无需迁移旧审计文件或重新分类。补发某天日报时，`--run-date` 应为报告日期的下一天，并使用 `--period daily` 避免额外发送周/月汇总。例如补发 2026-10-09：
+更新报告脚本后，下一次 cron 会自动使用新逻辑，无需重启 Worker、迁移旧审计文件或重新分类。建议重装一次报告 cron，将 HDFS 客户端完整路径固化，避免交互终端能找到 `hdfs` 而 cron 的 PATH 找不到。补发某天日报时，`--run-date` 应为报告日期的下一天，并使用 `--period daily` 避免额外发送周/月汇总。例如补发 2026-10-09：
 
 ```bash
 # 只预览，不发送
@@ -205,6 +230,7 @@ python3 scripts/send_weekly_report.py
 bash scripts/install_weekly_report_cron.sh \
   --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
   --python /usr/bin/python3 \
+  --hdfs-runner "$(command -v hdfs)" \
   --dws-runner /usr/local/bin/dws
 ```
 

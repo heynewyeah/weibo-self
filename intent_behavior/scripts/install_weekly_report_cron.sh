@@ -20,6 +20,7 @@
 #   bash scripts/install_weekly_report_cron.sh \
 #     --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
 #     --python /usr/bin/python3 \
+#     --hdfs-runner /path/to/hadoop/bin/hdfs \
 #     --dws-runner /usr/local/bin/dws
 #
 # 行为：
@@ -34,6 +35,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="python3"
 DWS_RUNNER="dws"
+HDFS_RUNNER="${HDFS_RUNNER:-hdfs}"
 BLOCK_BEGIN="# BEGIN intent_behavior_dingtalk_report"
 BLOCK_END="# END intent_behavior_dingtalk_report"
 LEGACY_MARKER="# intent_behavior_weekly_dingtalk_report"
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
     --dws-runner) DWS_RUNNER="$2"; shift 2 ;;
+    --hdfs-runner) HDFS_RUNNER="$2"; shift 2 ;;
     -h|--help)
       sed -n '1,31p' "$0"
       exit 0
@@ -60,8 +63,13 @@ if [[ ! -f "$PROJECT_DIR/scripts/send_weekly_report.py" ]]; then
 fi
 
 mkdir -p "$PROJECT_DIR/logs"
+if ! HDFS_EXECUTABLE="$(command -v "$HDFS_RUNNER")"; then
+  echo "未找到 HDFS 客户端；请先确认 ads_fst 的访问环境，或传 --hdfs-runner 完整路径。未修改 cron。" >&2
+  exit 2
+fi
+HDFS_RUNNER="$HDFS_EXECUTABLE"
 CRON_TIMEZONE="CRON_TZ=Asia/Shanghai"
-CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
+CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && HDFS_RUNNER='$HDFS_RUNNER' DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
 
 EXISTING="$(crontab -l 2>/dev/null || true)"
 FILTERED="$(

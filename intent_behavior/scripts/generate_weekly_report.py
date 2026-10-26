@@ -96,6 +96,7 @@ def parse_args() -> argparse.Namespace:
         default="周报",
         help="报告名称，例如日报、周汇总、月汇总",
     )
+    parser.add_argument("--source-manifest", default="", help="发送入口生成的数据源校验信息；不包含原始正文")
     return parser.parse_args()
 
 
@@ -236,14 +237,23 @@ def counter_lines(counter: Counter, total: int, empty_text: str = "暂无") -> L
     ]
 
 
-def failure_report_lines(audit_dir: Path, paths, exhausted) -> List[str]:
+def failure_report_lines(audit_dir: Path, paths, exhausted, source_info=None) -> List[str]:
     directory = audit_dir.resolve().parent / "failures"
     state_path = directory / "retry_state.sqlite3"
-    lines = ["### 失败留存与重试", f"- 完整失败档案目录：`{directory}`",
+    remote = source_info and source_info.get("source") == "dataworks_hdfs"
+    location = (source_info["hdfs_log_root"] + "/（归档内 logs/failures/）") if remote else str(directory)
+    lines = ["### 失败留存与重试", f"- 完整失败档案目录：`{location}`",
              f"- 本窗口新增停止自动重试：{len(exhausted)} 条",
              "- 默认重试规则：首次处理后最多额外 3 次；间隔 1 / 5 / 30 分钟。",
              "- 达到上限后保留 level=0 等待人工排查，不再自动调用反解/模型/回写。"]
-    if state_path.is_file():
+    if remote:
+        counts = source_info["retry_counts"]
+        lines.extend([
+            f"- 当前累计预算已耗尽：{counts.get('exhausted', 0)} 条（HDFS 心跳状态，非本窗口新增）",
+            f"- 当前等待重试：{counts.get('waiting', 0)} 条（HDFS 心跳状态）",
+            f"- 持久化重试状态及完整详情备份：`{source_info['failure_state_uri']}`",
+        ])
+    elif state_path.is_file():
         try:
             # 只读打开，不创建文件、不修改状态；日报不能触发重试或泄露原始内容。
             with closing(sqlite3.connect(state_path.as_uri() + "?mode=ro", uri=True, timeout=2)) as conn:
@@ -259,7 +269,8 @@ def failure_report_lines(audit_dir: Path, paths, exhausted) -> List[str]:
         lines.append("- 尚无新重试机制的持久化档案；历史失败请查看上面的 JSONL 审计目录。")
     if paths:
         lines.append("- 本窗口失败档案（最多列出 10 个，其余见上述目录）：")
-        lines.extend(f"  - `{path}`" for path in sorted(paths)[:10])
+        lines.extend(f"  - `{('归档内 logs/failures/' + Path(path).name) if remote else path}`"
+                     for path in sorted(paths)[:10])
     lines.append("- 档案含完整输入与失败详情，仅保存在服务器；机器人不展示原始正文和模型输出。")
     return lines
 
@@ -270,7 +281,9 @@ def build_report(
     end_day: date,
     audit_dir: Path,
     report_name: str = "周报",
+    source_info: Optional[Dict[str, Any]] = None,
 ) -> str:
+    remote = source_info and source_info.get("source") == "dataworks_hdfs"
     result_events: List[Dict[str, Any]] = []
     runs: set[str] = set()
     task_ids: set[str] = set()
@@ -385,7 +398,9 @@ def build_report(
         lines.extend(counter_lines(error_stage_counts, processed))
     else:
         lines.append("- 本统计窗口内无结构化错误阶段记录。")
-    if not processed:
+    if not processed and remote:
+        lines.append("- 审计来源及窗口首尾覆盖已校验，本窗口没有 mid_processed 事件。")
+    elif not processed:
         lines.extend([
             "- 当前没有可用于本报告的 JSONL 审计记录。",
             "- 请确认 `audit.local_enabled: true`，或启用并验证 MySQL 审计表后扩展统计来源。",
@@ -408,15 +423,29 @@ def build_report(
             f"｜interrupted {counts['interrupted']}"
         )
 
+    source_lines = []
+    if remote:
+        source_lines = [
+            "## 数据来源与新鲜度",
+            f"- 数据源：DataWorks HDFS 归档 + 旧服务器历史审计（同名快照去重）",
+            f"- HDFS 日志目录：`{source_info['hdfs_log_root']}/`",
+            f"- 最新心跳：{source_info['heartbeat_at']}；状态：{source_info['worker_state']}",
+            f"- 本次同步完成：{source_info['synced_at']}",
+            f"- 使用实例归档：{source_info['archive_count']} 份；旧服务器历史文件：{source_info['legacy_file_count']} 份",
+            "- 首尾归档覆盖已校验；统计以 JSONL 事件为准，不累加进程心跳里的累计数。",
+            "",
+        ]
     lines.extend([
         "",
         "## 审计与存储健康度",
-        f"- JSONL 审计目录：`{audit_dir}`",
+        f"- JSONL 审计目录：`{source_info['hdfs_log_root']}/（归档内 logs/runs/）`" if remote
+        else f"- JSONL 审计目录：`{audit_dir}`",
         f"- JSONL 目录占用：{fmt_bytes(audit_size)}",
-        f"- 所在磁盘可用空间：{fmt_bytes(disk.free)} / {fmt_bytes(disk.total)}"
+        f"- {'报告发送机' if remote else '所在'}磁盘可用空间：{fmt_bytes(disk.free)} / {fmt_bytes(disk.total)}"
         f"（使用率 {disk.used / disk.total * 100:.1f}%）",
         "",
-        *failure_report_lines(audit_dir, failure_paths, exhausted),
+        *source_lines,
+        *failure_report_lines(audit_dir, failure_paths, exhausted, source_info),
         "",
         "> 口径说明：success 为正常分类并回写；fallback 为处理异常但已按业务规则回写 level=6；"
         "failed 为未闭环失败；interrupted 为人工 Ctrl+C 中止，mid 应保持 level=0。"
@@ -451,12 +480,19 @@ def main() -> None:
     start_day, end_day = explicit_date_range(args.start_date, end_day, args.days)
     audit_dir = Path(args.audit_dir).expanduser().resolve()
     report_name = args.report_name.strip() or "报告"
+    source_info = None
+    if args.source_manifest:
+        try:
+            source_info = json.loads(Path(args.source_manifest).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SystemExit("无法读取报告数据源校验信息") from exc
     report = build_report(
         iter_events(audit_dir, start_day, end_day),
         start_day,
         end_day,
         audit_dir,
         report_name=report_name,
+        source_info=source_info,
     )
 
     if args.output:

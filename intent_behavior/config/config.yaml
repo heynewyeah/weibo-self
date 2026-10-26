@@ -409,6 +409,13 @@ notifications:
   # 配置节名保留 weekly_report 仅为兼容现有部署。
   dingtalk_weekly_report:
     enabled: true
+    # 正式报告先合并 DataWorks HDFS 归档与旧服务器审计；禁止自动退回旧本地日志。
+    data_source: dataworks_hdfs
+    hdfs_root: "viewfs://c9/dw_ext/ad/person/xuanyu11/intent_behavior/dataworks"
+    # cron 找不到 hdfs 时，用 HDFS_RUNNER 环境变量或此处的完整路径覆盖。
+    hdfs_runner: "hdfs"
+    source_max_age_sec: 900
+    source_cache_dir: "logs/report_source"
     robot_code: "dingjlymwvcntpnthnal"
     recipient_user_ids:
       - "233809"

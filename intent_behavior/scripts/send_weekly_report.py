@@ -15,6 +15,8 @@
   2. 已申请“企业内机器人发送消息”权限；
   3. 当前执行机器已安装并登录 dws，且能使用该机器人；
   4. config/config.yaml 已配置 notifications.dingtalk_weekly_report。
+  5. 发送服务器具备 hdfs 客户端和 ads_fst 对个人项目目录的只读访问权限；
+     默认先同步 HDFS 归档、校验来源，再生成日报/周报/月报；--dry-run 也会执行同步。
 
 运行方式：
   cd intent_behavior
@@ -49,6 +51,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+try:
+    from scripts.report_sources import DEFAULT_HDFS_ROOT, ReportSourceError, prepare_report_inputs
+except ModuleNotFoundError:
+    from report_sources import DEFAULT_HDFS_ROOT, ReportSourceError, prepare_report_inputs
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -87,6 +94,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--title", default="", help="手工覆盖消息标题")
     parser.add_argument("--dry-run", action="store_true", help="只输出报告，不发送钉钉消息")
+    parser.add_argument("--source", choices=("dataworks_hdfs", "local"), default=None,
+                        help="默认读取 DataWorks HDFS；local 仅允许配合 --dry-run 人工核对")
+    parser.add_argument("--audit-dir", default=str(PROJECT_DIR / "logs/runs"),
+                        help="旧服务器审计目录；与 HDFS 合并，不覆盖原始文件")
     return parser.parse_args()
 
 
@@ -229,18 +240,23 @@ def report_title(config: dict, spec: ReportSpec, override: str = "") -> str:
     return env_or_config(env_name, config.get(config_key, default))
 
 
-def render_report(spec: ReportSpec) -> str:
+def render_report(spec: ReportSpec, audit_dir=None, manifest=None) -> str:
+    command = [
+        sys.executable,
+        str(GENERATE_SCRIPT),
+        "--start-date",
+        spec.start_day.isoformat(),
+        "--end-date",
+        spec.end_day.isoformat(),
+        "--report-name",
+        spec.report_name,
+    ]
+    if audit_dir is not None:
+        command += ["--audit-dir", str(audit_dir)]
+    if manifest is not None:
+        command += ["--source-manifest", str(manifest)]
     return subprocess.run(
-        [
-            sys.executable,
-            str(GENERATE_SCRIPT),
-            "--start-date",
-            spec.start_day.isoformat(),
-            "--end-date",
-            spec.end_day.isoformat(),
-            "--report-name",
-            spec.report_name,
-        ],
+        command,
         cwd=str(PROJECT_DIR),
         check=True,
         capture_output=True,
@@ -294,10 +310,36 @@ def main() -> None:
     run_day = parse_run_date(args.run_date, timezone_name)
     reports = scheduled_reports(run_day, args.period)
     runner = shlex.split(os.getenv("DWS_RUNNER", "dws").strip() or "dws")
+    source = args.source or config.get("data_source", "dataworks_hdfs")
+    if source == "local" and not args.dry_run:
+        raise SystemExit("local 数据源仅允许 --dry-run 核对，禁止把旧服务器本地数据当成正式统计发送")
+    hdfs_root = env_or_config("DINGTALK_REPORT_HDFS_ROOT", config.get("hdfs_root", DEFAULT_HDFS_ROOT))
+    try:
+        # 一次同步服务当天所有日报/周报/月报；全部生成成功后才开始发送。
+        with prepare_report_inputs(
+            source, min(spec.start_day for spec in reports), max(spec.end_day for spec in reports),
+            legacy_dir=args.audit_dir,
+            cache_dir=PROJECT_DIR / config.get("source_cache_dir", "logs/report_source"),
+            hdfs_root=hdfs_root,
+            runner=env_or_config("HDFS_RUNNER", config.get("hdfs_runner", "hdfs")),
+            max_age=int(config.get("source_max_age_sec", 900)),
+        ) as prepared:
+            rendered = [(spec, report_title(config, spec, args.title),
+                         render_report(spec, prepared.audit_dir, prepared.manifest)) for spec in reports]
+    except (ReportSourceError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        # 数据缺失不是业务量为 0。正式调度只发一条异常提示，不发误导性零值报表。
+        message = (f"# 原生内容站报告数据缺失（调度日 {run_day}）\n\n"
+                   f"- 未生成正常统计，不能据此判断处理量为 0。\n"
+                   f"- 原因：{exc}\n- HDFS 日志目录：`{hdfs_root.rstrip('/')}/logs/`\n"
+                   "- 请检查 HDFS 客户端、访问权限、最新心跳与归档完整性。\n")
+        if args.dry_run:
+            print(message)
+        else:
+            print(message, file=sys.stderr)
+            send_report(runner, robot_code, recipients, "原生内容站项目报告｜数据异常", message)
+        raise SystemExit(2)
 
-    for index, spec in enumerate(reports):
-        title = report_title(config, spec, args.title)
-        report = render_report(spec)
+    for index, (spec, title, report) in enumerate(rendered):
         if args.dry_run:
             if index:
                 print()
