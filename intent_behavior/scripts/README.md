@@ -33,6 +33,8 @@ python3 worker.py --config config/config.yaml
 
 数据源过期/损坏/缺失时，不回退到陈旧本地审计，不发送零值统计；正式任务只发一条数据异常提示并非零退出。`--source local --dry-run` 仅用于人工排查。实现及缓存边界见 `report_sources.py` 和项目 README 的“钉钉定时项目报告”。
 
+cron 不自动加载登录 shell 的 Java 环境。安装器校验 `--java-home`（未传时使用当前 `JAVA_HOME`）中的 `bin/java`，并把 `JAVA_HOME` 固定到本报告命令；路径缺失或 Java 无法运行时不修改原 cron。服务器已确认的 Java 目录为 `/usr/local/jdk1.8.0_202`。环境修复后重新安装报告定时块即可，无需重启 Worker。
+
 企业机器人需在钉钉开发者后台完成以下步骤后才能启用发送：
 
 1. 创建应用；
@@ -56,6 +58,7 @@ bash scripts/install_weekly_report_cron.sh \
   --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
   --python /usr/bin/python3 \
   --hdfs-runner "$(command -v hdfs)" \
+  --java-home "$JAVA_HOME" \
   --dws-runner /usr/local/bin/dws
 ```
 

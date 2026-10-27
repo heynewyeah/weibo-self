@@ -202,7 +202,11 @@ python3 -m unittest tests.test_report_sources tests.test_weekly_report tests.tes
 
 统计时扫描所有保留的审计日期目录，以每条记录的 `event_time`（Asia/Shanghai）决定是否进入窗口及归属哪一天。长期 worker 的目录是启动日期，跨天记录仍可能写在旧目录，不再按目录日期过滤。无时区的历史时间按北京时间解释；缺少时间的旧记录兼容使用目录日期，时间格式损坏的记录告警并跳过。门户 JSON 聚合复用相同读取逻辑。
 
-更新报告脚本后，下一次 cron 会自动使用新逻辑，无需重启 Worker、迁移旧审计文件或重新分类。建议重装一次报告 cron，将 HDFS 客户端完整路径固化，避免交互终端能找到 `hdfs` 而 cron 的 PATH 找不到。补发某天日报时，`--run-date` 应为报告日期的下一天，并使用 `--period daily` 避免额外发送周/月汇总。例如补发 2026-10-09：
+更新报告脚本后，下一次 cron 会自动使用新逻辑，无需重启 Worker、迁移旧审计文件或重新分类。修改报告运行环境后需重装一次报告 cron，将 HDFS 客户端完整路径和 Java 目录固化。安装器优先使用 `--java-home`，否则读取当前 `JAVA_HOME`，校验 `bin/java -version` 成功后才更新 cron；缺失或不可用时保留原定时任务。Java 环境只写在本报告的命令行内，不改变其他 cron 的环境。
+
+若手动 HDFS 读取成功，但定时报告提示 `JAVA_HOME is not set`，说明 cron 未加载登录环境。以 `ads_fst` 登录后确认 `JAVA_HOME`，重新安装时显式传入该路径；本服务器已确认目录为 `/usr/local/jdk1.8.0_202`。报告不是常驻进程，重装会替换原标记块，不需要另停旧版，也不需要重启 DataWorks Worker。
+
+补发某天日报时，`--run-date` 应为报告日期的下一天，并使用 `--period daily` 避免额外发送周/月汇总。例如补发 2026-10-09：
 
 ```bash
 # 只预览，不发送
@@ -233,6 +237,7 @@ bash scripts/install_weekly_report_cron.sh \
   --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
   --python /usr/bin/python3 \
   --hdfs-runner "$(command -v hdfs)" \
+  --java-home "$JAVA_HOME" \
   --dws-runner /usr/local/bin/dws
 ```
 

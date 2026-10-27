@@ -268,16 +268,28 @@ class SenderSourceFailureTests(unittest.TestCase):
 
 
 class ReportCronTests(unittest.TestCase):
-    def test_installer_pins_hdfs_path_is_idempotent_and_keeps_unrelated_jobs(self):
+    @contextmanager
+    def installer_fixture(self):
         with tempfile.TemporaryDirectory(prefix="report-cron-test-") as tmp:
             root = Path(tmp)
             project = root / "project"
             (project / "scripts").mkdir(parents=True)
-            (project / "scripts/send_weekly_report.py").write_text("# fixture")
+            # 真正运行安装后的 cron 命令，替身只校验环境，不读取 HDFS/发送消息。
+            (project / "scripts/send_weekly_report.py").write_text(
+                "import os, subprocess\n"
+                "assert os.environ['JAVA_HOME'] == os.environ['TEST_JAVA_HOME']\n"
+                "subprocess.run([os.environ['HDFS_RUNNER'], 'dfs', '-cat', 'fixture'], check=True)\n"
+                "print('cron-java-ok')\n"
+            )
             binary = root / "bin"
             binary.mkdir()
+            java_home = root / "jdk with spaces"
+            (java_home / "bin").mkdir(parents=True)
+            java = java_home / "bin/java"
+            java.write_text("#!/bin/sh\nexit 0\n")
+            java.chmod(0o700)
             hdfs = binary / "hdfs"
-            hdfs.write_text("#!/bin/sh\nexit 0\n")
+            hdfs.write_text('#!/bin/sh\nexec "$JAVA_HOME/bin/java" -version\n')
             hdfs.chmod(0o700)
             state = root / "fake-crontab"
             unrelated = "15 2 * * * /safe/unrelated-job\n"
@@ -286,30 +298,76 @@ class ReportCronTests(unittest.TestCase):
             cron.write_text(f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\np=Path(os.environ['TEST_CRONTAB'])\nif sys.argv[1]=='-l': print(p.read_text(),end='')\nelse: p.write_text(sys.stdin.read())\n")
             cron.chmod(0o700)
             env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
-                       TEST_CRONTAB=str(state), TMPDIR=str(root))
+                       TEST_CRONTAB=str(state), TMPDIR=str(root), JAVA_HOME=str(java_home),
+                       TEST_JAVA_HOME=str(java_home))
             installer = Path(sender.PROJECT_DIR) / "scripts/install_weekly_report_cron.sh"
             command = ["bash", str(installer), "--project-dir", str(project),
+                       "--python", sys.executable,
                        "--expected-user", pwd.getpwuid(os.geteuid()).pw_name, "--hdfs-runner", str(hdfs)]
+            yield root, project, java_home, hdfs, state, unrelated, env, command
+
+    def test_installer_pins_hdfs_path_is_idempotent_and_keeps_unrelated_jobs(self):
+        with self.installer_fixture() as (root, project, java_home, hdfs, state, unrelated, env, command):
             for _ in range(2):
                 subprocess.run(command, check=True, capture_output=True, text=True, env=env)
             result = state.read_text()
             self.assertIn(unrelated, result)
             self.assertEqual(1, result.count("scripts/send_weekly_report.py"))
             self.assertIn(f"HDFS_RUNNER='{hdfs}'", result)
+            self.assertIn(f"&& JAVA_HOME='{java_home}'", result)
             self.assertIn("CRON_TZ=Asia/Shanghai", result)
-            subprocess.run(command[:-1] + [str(binary / "missing")], capture_output=True, env=env)
+            subprocess.run(command[:-1] + [str(hdfs.parent / "missing")], capture_output=True, env=env)
             self.assertEqual(result, state.read_text())
             wrong_user = command + ["--expected-user", "not-the-current-user"]
             rejected = subprocess.run(wrong_user, capture_output=True, env=env)
             self.assertEqual(2, rejected.returncode, rejected.stderr.decode("utf-8", "replace"))
             self.assertEqual(result, state.read_text())
-            removed = subprocess.run(wrong_user + ["--remove"], check=True, capture_output=True, text=True, env=env)
+            remove_env = dict(env)
+            remove_env.pop("JAVA_HOME", None)
+            removed = subprocess.run(wrong_user + ["--remove"], check=True, capture_output=True, text=True, env=remove_env)
             self.assertNotIn("scripts/send_weekly_report.py", state.read_text())
             self.assertIn(unrelated, state.read_text())
             backups = list(root.glob("intent-behavior-report-cron.*"))
             self.assertEqual(1, len(backups))
             self.assertEqual(result, backups[0].read_text())
             self.assertIn(str(backups[0]), removed.stdout)
+
+    def test_installed_cron_runs_without_login_java_environment(self):
+        with self.installer_fixture() as (root, project, java_home, hdfs, state, unrelated, env, command):
+            subprocess.run(command, check=True, capture_output=True, text=True, env=env)
+            entry = next(line for line in state.read_text().splitlines() if "send_weekly_report.py" in line)
+            cron_env = dict(env, PATH="/usr/bin:/bin")
+            cron_env.pop("JAVA_HOME", None)
+            subprocess.run(["/bin/sh", "-c", entry.split(" ", 5)[5]],
+                           check=True, capture_output=True, text=True, env=cron_env)
+            self.assertIn("cron-java-ok", (project / "logs/weekly_report_cron.log").read_text())
+
+    def test_invalid_java_preserves_existing_crontab(self):
+        with self.installer_fixture() as (root, project, java_home, hdfs, state, unrelated, env, command):
+            broken_home = root / "broken-jdk"
+            (broken_home / "bin").mkdir(parents=True)
+            (broken_home / "bin/java").write_text("#!/bin/sh\nexit 1\n")
+            (broken_home / "bin/java").chmod(0o700)
+            for value in (None, "", str(root / "missing-jdk"), str(broken_home),
+                          "relative-jdk", str(root / "bad'jdk"), str(root / "bad%jdk"),
+                          str(root / "bad\njdk")):
+                with self.subTest(java_home=value):
+                    invalid_env = dict(env)
+                    if value is None:
+                        invalid_env.pop("JAVA_HOME", None)
+                    else:
+                        invalid_env["JAVA_HOME"] = value
+                    result = subprocess.run(command, capture_output=True, text=True, env=invalid_env)
+                    self.assertEqual(2, result.returncode, result.stderr)
+                    self.assertIn("未修改 cron", result.stderr)
+                    self.assertEqual(unrelated, state.read_text())
+
+    def test_explicit_java_home_overrides_invalid_login_value(self):
+        with self.installer_fixture() as (root, project, java_home, hdfs, state, unrelated, env, command):
+            env["JAVA_HOME"] = "/missing/login-jdk"
+            subprocess.run(command + ["--java-home", str(java_home)],
+                           check=True, capture_output=True, text=True, env=env)
+            self.assertIn(f"JAVA_HOME='{java_home}'", state.read_text())
 
 
 class SenderProductionSourceTests(unittest.TestCase):

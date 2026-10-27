@@ -24,12 +24,14 @@
 #     --project-dir /data0/xuanyu11/intent_behavior-git/weibo-self/intent_behavior \
 #     --python /usr/bin/python3 \
 #     --hdfs-runner /path/to/hadoop/bin/hdfs \
+#     --java-home /path/to/jdk \
 #     --dws-runner /usr/local/bin/dws
 #
 # 行为：
 #   - 添加或更新一个带唯一起止标记的 cron 配置块，不影响其他 cron；
 #   - 使用 TZ=Asia/Shanghai，固定为每天 10:00（含周末）；
 #   - 输出追加到 logs/weekly_report_cron.log；
+#   - 校验 --java-home 或当前 JAVA_HOME，并仅为本报告任务固定 Java 路径；
 #   - 不保存密码或 AppSecret。
 # =============================================================================
 
@@ -39,6 +41,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="python3"
 DWS_RUNNER="dws"
 HDFS_RUNNER="${HDFS_RUNNER:-hdfs}"
+REPORT_JAVA_HOME="${JAVA_HOME:-}"
 EXPECTED_USER="ads_fst"
 REMOVE_ONLY=false
 BLOCK_BEGIN="# BEGIN intent_behavior_dingtalk_report"
@@ -51,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --python) PYTHON_BIN="$2"; shift 2 ;;
     --dws-runner) DWS_RUNNER="$2"; shift 2 ;;
     --hdfs-runner) HDFS_RUNNER="$2"; shift 2 ;;
+    --java-home) REPORT_JAVA_HOME="$2"; shift 2 ;;
     --expected-user) EXPECTED_USER="$2"; shift 2 ;;
     --remove) REMOVE_ONLY=true; shift ;;
     -h|--help)
@@ -98,8 +102,24 @@ if ! HDFS_EXECUTABLE="$(command -v "$HDFS_RUNNER")"; then
   exit 2
 fi
 HDFS_RUNNER="$HDFS_EXECUTABLE"
+# cron 不加载登录 shell 的 Java 配置。仅固定本报告命令的环境，避免影响后续其他 cron。
+# 拒绝 cron 的换行/百分号语法和单引号，防止目录值破坏下面的单引号参数。
+case "$REPORT_JAVA_HOME" in
+  /*) ;;
+  *) echo "请设置 JAVA_HOME 或传 --java-home，必须为 JDK 的绝对目录。未修改 cron。" >&2; exit 2 ;;
+esac
+case "$REPORT_JAVA_HOME" in
+  *\'*|*%*|*$'\n'*|*$'\r'*)
+    echo "Java 目录不能包含单引号、百分号或换行。未修改 cron。" >&2
+    exit 2
+    ;;
+esac
+if [[ ! -x "$REPORT_JAVA_HOME/bin/java" ]] || ! "$REPORT_JAVA_HOME/bin/java" -version >/dev/null 2>&1; then
+  echo "Java 不可执行：${REPORT_JAVA_HOME}/bin/java；请确认 --java-home 或 JAVA_HOME。未修改 cron。" >&2
+  exit 2
+fi
 CRON_TIMEZONE="CRON_TZ=Asia/Shanghai"
-CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && HDFS_RUNNER='$HDFS_RUNNER' DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
+CRON_LINE="0 10 * * * cd '$PROJECT_DIR' && JAVA_HOME='$REPORT_JAVA_HOME' HDFS_RUNNER='$HDFS_RUNNER' DWS_RUNNER='$DWS_RUNNER' '$PYTHON_BIN' scripts/send_weekly_report.py >> logs/weekly_report_cron.log 2>&1"
 
 {
   printf '%s\n' "$FILTERED"
