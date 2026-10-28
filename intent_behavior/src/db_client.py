@@ -228,6 +228,7 @@ class MySQLTaskRepository:
 
     def fetch_active_tasks(self, conn, limit: int = 100) -> List[TaskRecord]:
         table = self.config.get("task_table", "super_mid_task")
+        task_id_field = self.config.get("task_id_field", "task_id")
         task_type = int(self.config.get("active_task_type", 1))
         exec_status_done = int(self.config.get("inactive_exec_status", 5))
         end_time_field = self.config.get("task_end_time_field", "end_time")
@@ -236,6 +237,7 @@ class MySQLTaskRepository:
         SELECT *
         FROM {table}
         WHERE task_type = %s
+          AND {task_id_field} != %s
           AND (
                 exec_status != %s
                 OR (exec_status = %s AND {end_time_field} > DATE_SUB(NOW(), INTERVAL 1 DAY))
@@ -245,7 +247,8 @@ class MySQLTaskRepository:
         """
 
         with conn.cursor() as cur:
-            cur.execute(sql, (task_type, exec_status_done, exec_status_done, limit))
+            # 888888 由独立特殊入口消费，在 LIMIT 和 customer_id 解析前排除。
+            cur.execute(sql, (task_type, 888888, exec_status_done, exec_status_done, limit))
             rows = cur.fetchall() or []
 
         tasks: List[TaskRecord] = []

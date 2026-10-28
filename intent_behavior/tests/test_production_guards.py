@@ -23,6 +23,7 @@ import os
 import sys
 import unittest
 import logging
+import sqlite3
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -280,6 +281,49 @@ class ProductionGuardTests(unittest.TestCase):
         self.assertEqual("nature_ad_super_mid_1", task.shard_table)
         self.assertEqual("蔚来", task.resolve_brand_by_tag("1042015:carSubBrand_x"))
         self.assertEqual(["蔚来发布会", "乐道新车"], task.topic_values)
+
+    def test_active_tasks_excludes_special_before_limit_and_customer_validation(self):
+        # 在 SQLite 中执行仓储生成的查询，仅转换占位符和 MySQL 日期表达式。
+        # 特殊任务即便补上有效 operator_uid，也不能进入普通消费者。
+        for task_field in ("task_id", "business_task_id"):
+            for special_uid in (0, 21):
+                with self.subTest(task_field=task_field, special_uid=special_uid):
+                    config = minimal_config()
+                    config["mysql"]["task_id_field"] = task_field
+                    logger = MagicMock()
+                    repo = MySQLTaskRepository(config["mysql"], logger, config)
+                    with sqlite3.connect(":memory:") as db:
+                        db.row_factory = sqlite3.Row
+                        db.execute(f"CREATE TABLE super_mid_task (id INTEGER, {task_field} INTEGER, "
+                                   "operator_uid INTEGER, task_type INTEGER, exec_status INTEGER, end_time TEXT)")
+                        db.executemany("INSERT INTO super_mid_task VALUES (?, ?, ?, 1, 0, NULL)", [
+                            (1046, 888888, special_uid),
+                            (888888, 1046, 21),  # 按业务 task_id 排除，不能按行 id 排除。
+                            (888889, 1047, 22),
+                        ])
+                        conn = MagicMock()
+                        cur = conn.cursor.return_value.__enter__.return_value
+
+                        def execute(sql, params):
+                            sql = sql.replace("%s", "?").replace(
+                                "DATE_SUB(NOW(), INTERVAL 1 DAY)", "datetime('now', '-1 day')")
+                            cur.fetchall.return_value = [dict(row) for row in db.execute(sql, params)]
+
+                        cur.execute.side_effect = execute
+                        tasks = repo.fetch_active_tasks(conn, limit=1)
+                    self.assertEqual([1046], [task.task_id for task in tasks])
+                    self.assertEqual(21, tasks[0].customer_id)
+                    logger.warning.assert_not_called()
+
+    def test_active_tasks_still_warns_for_invalid_ordinary_customer(self):
+        config = minimal_config()
+        logger, conn = MagicMock(), MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+            {"id": 1047, "task_id": 999999, "operator_uid": 0},
+        ]
+        repo = MySQLTaskRepository(config["mysql"], logger, config)
+        self.assertEqual([], repo.fetch_active_tasks(conn))
+        logger.warning.assert_called_once()
 
     def test_hit_brand_exact_match_and_missing_fallback(self):
         task = TaskRecord(

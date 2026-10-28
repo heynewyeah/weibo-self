@@ -247,3 +247,11 @@ cd intent_behavior && python3 scripts/dataworks_monitor.py --hdfs-root viewfs://
 
 平台任务已启动，无需在旧服务器再启动第二个特殊Worker。查看使用上面的只读监控命令；
 源代码提交未自动push，平台使用的是本次已上传且校验过的发布包。
+
+## 普通任务排除 888888（2026-10-28）
+
+任务表后来新增了 id=1046、task_id=888888、operator_uid=0 的记录。普通 Worker 原先每轮选中后才因无有效客户路由跳过，导致反复警告；这不代表它已完成博文分类。
+
+普通任务查询 `fetch_active_tasks` 现按业务 task_id 在 SQL 中排除 888888，过滤发生在 LIMIT 和客户字段解析之前；即使该任务以后填写有效 operator_uid，也不进入普通消费链路。其他普通任务的有效性检查和警告保留。已有 `worker_special_task.py` 不改动，继续独立扫描明细分表。
+
+此修复需重新构建并更新普通 DataWorks 任务的源码依赖包，在新实例中生效；仅 git push 或平台用旧包重启不会加载新代码。特殊工作流无需重启或新建。
